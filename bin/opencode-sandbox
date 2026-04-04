@@ -237,9 +237,14 @@ VOLUME_FLAGS+=(-v "opencode-data:/home/opencode/.local/share/opencode")
 
 # Use the workspace directory name as part of the container name for clarity.
 # Sanitize to Docker's allowed charset: [a-zA-Z0-9_.-], must start alphanum.
-WORKSPACE_NAME="$(basename "$WORKSPACE" | tr -c 'a-zA-Z0-9_.-' '-' | sed 's/^[^a-zA-Z0-9]/x/')"
-[[ -z "$WORKSPACE_NAME" ]] && WORKSPACE_NAME="workspace"
-CONTAINER_NAME="${CONTAINER_PREFIX}-${WORKSPACE_NAME}"
+# Strip trailing dashes produced by tr replacing the trailing newline, and
+# avoid doubling the prefix when the workspace folder is named identically.
+WORKSPACE_NAME="$(basename "$WORKSPACE" | tr -c 'a-zA-Z0-9_.-' '-' | sed 's/^[^a-zA-Z0-9]/x/; s/-*$//')"
+if [[ -z "$WORKSPACE_NAME" || "$WORKSPACE_NAME" == "$CONTAINER_PREFIX" ]]; then
+    CONTAINER_NAME="$CONTAINER_PREFIX"
+else
+    CONTAINER_NAME="${CONTAINER_PREFIX}-${WORKSPACE_NAME}"
+fi
 
 # Only attach a TTY when stdin is a terminal (allows non-interactive / CI usage)
 DOCKER_FLAGS=(--rm --interactive)
