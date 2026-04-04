@@ -1,0 +1,265 @@
+#!/usr/bin/env bash
+#
+# opencode-sandbox — run OpenCode in an isolated Docker container with a
+# custom agent suite. Any project directory can be mounted as the workspace.
+#
+# Usage:
+#   opencode-sandbox [options] [workspace-path] [-- opencode-args...]
+#
+# Options:
+#   -r, --ref DIR    Mount DIR as a read-only reference directory (repeatable)
+#   --build          Force rebuild the Docker image
+#   --pull           Pull base image before building
+#   -h, --help       Show this help message
+#
+# If workspace-path is omitted, the current directory is used.
+# Everything after "--" is forwarded to the opencode binary inside the container.
+#
+# API keys are read from the calling environment:
+#   ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, etc.
+#
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+IMAGE_NAME="opencode-sandbox"
+CONTAINER_PREFIX="opencode-sandbox"
+
+# Resolve the repo root (where this script lives is bin/, go one level up)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+usage() {
+    sed -n '/^# Usage:/,/^#$/p' "$0" | sed 's/^# \?//'
+    echo
+    echo "Examples:"
+    echo "  opencode-sandbox                                    # workspace = cwd"
+    echo "  opencode-sandbox ~/projects/myapp                   # explicit workspace"
+    echo "  opencode-sandbox -r ~/projects/lib-a .              # with a reference dir"
+    echo "  opencode-sandbox -r ../lib-a -r ../lib-b ~/myapp    # multiple references"
+    echo "  opencode-sandbox --build .                          # force rebuild"
+    echo "  opencode-sandbox . -- --version                     # pass flags to opencode"
+    exit 0
+}
+
+die() {
+    echo "error: $1" >&2
+    exit 1
+}
+
+info() {
+    echo "==> $1"
+}
+
+# ---------------------------------------------------------------------------
+# Parse arguments
+# ---------------------------------------------------------------------------
+
+FORCE_BUILD=false
+PULL_BASE=false
+WORKSPACE=""
+REF_DIRS=()
+OPENCODE_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -r|--ref)
+            [[ $# -ge 2 ]] || die "--ref requires a directory argument"
+            REF_DIRS+=("$2")
+            shift 2
+            ;;
+        --build)
+            FORCE_BUILD=true
+            shift
+            ;;
+        --pull)
+            PULL_BASE=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            ;;
+        --)
+            shift
+            OPENCODE_ARGS=("$@")
+            break
+            ;;
+        -*)
+            die "unknown option: $1 (use -- to pass flags to opencode)"
+            ;;
+        *)
+            if [[ -z "$WORKSPACE" ]]; then
+                WORKSPACE="$1"
+            else
+                die "unexpected argument: $1"
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Default workspace to current directory
+WORKSPACE="${WORKSPACE:-.}"
+
+# Resolve to absolute path
+WORKSPACE="$(cd "$WORKSPACE" 2>/dev/null && pwd)" || die "workspace path does not exist: $WORKSPACE"
+
+# ---------------------------------------------------------------------------
+# Validate reference directories (detect basename collisions early)
+# ---------------------------------------------------------------------------
+
+if [[ ${#REF_DIRS[@]} -gt 0 ]]; then
+    declare -A _REF_NAMES
+    for ref in "${REF_DIRS[@]}"; do
+        ref_abs="$(cd "$ref" 2>/dev/null && pwd)" || die "reference path does not exist: $ref"
+        ref_name="$(basename "$ref_abs")"
+        if [[ -n "${_REF_NAMES[$ref_name]:-}" ]]; then
+            die "reference name collision: '${ref_name}' is used by both '${_REF_NAMES[$ref_name]}' and '${ref_abs}'. Rename one of the directories to avoid ambiguity."
+        fi
+        _REF_NAMES[$ref_name]="$ref_abs"
+    done
+    unset _REF_NAMES
+fi
+
+# ---------------------------------------------------------------------------
+# Build the image (if needed)
+# ---------------------------------------------------------------------------
+
+build_image() {
+    info "Building ${IMAGE_NAME} image..."
+    local build_args=(
+        --build-arg "UID=$(id -u)"
+        --build-arg "GID=$(id -g)"
+        -t "$IMAGE_NAME"
+        -f "${REPO_ROOT}/build/Dockerfile"
+    )
+    if [[ "$PULL_BASE" == true ]]; then
+        build_args+=(--pull)
+    fi
+    docker build "${build_args[@]}" "$REPO_ROOT"
+}
+
+if [[ "$FORCE_BUILD" == true ]]; then
+    build_image
+elif ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
+    info "Image ${IMAGE_NAME} not found, building..."
+    build_image
+fi
+
+# ---------------------------------------------------------------------------
+# Collect API keys from the environment (written to a temp file so they
+# don't appear in the host process listing via `ps`)
+# ---------------------------------------------------------------------------
+
+ENV_FILE="$(mktemp)"
+trap 'rm -f "$ENV_FILE"' EXIT
+chmod 600 "$ENV_FILE"
+
+# Well-known LLM provider keys — pass through any that are set
+for var in \
+    ANTHROPIC_API_KEY \
+    OPENAI_API_KEY \
+    GOOGLE_API_KEY \
+    GEMINI_API_KEY \
+    MISTRAL_API_KEY \
+    GROQ_API_KEY \
+    XAI_API_KEY \
+    DEEPSEEK_API_KEY \
+    OPENROUTER_API_KEY \
+    TOGETHER_API_KEY \
+    AWS_ACCESS_KEY_ID \
+    AWS_SECRET_ACCESS_KEY \
+    AWS_SESSION_TOKEN \
+    AWS_REGION \
+    AZURE_OPENAI_API_KEY \
+    AZURE_OPENAI_ENDPOINT \
+; do
+    if [[ -n "${!var:-}" ]]; then
+        echo "${var}=${!var}" >> "$ENV_FILE"
+    fi
+done
+
+# ---------------------------------------------------------------------------
+# Assemble volume mounts
+# ---------------------------------------------------------------------------
+
+VOLUME_FLAGS=()
+
+# Workspace (read-write)
+VOLUME_FLAGS+=(-v "${WORKSPACE}:/workspace:rw")
+
+# Host git config (read-only, optional)
+if [[ -f "${HOME}/.gitconfig" ]]; then
+    VOLUME_FLAGS+=(-v "${HOME}/.gitconfig:/home/opencode/.gitconfig:ro")
+fi
+
+# Host SSH — prefer agent forwarding (exposes no private key files), fall back
+# to mounting the directory read-only if the agent socket is not available.
+if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
+    VOLUME_FLAGS+=(-v "${SSH_AUTH_SOCK}:/tmp/ssh-agent.sock:ro")
+    echo "SSH_AUTH_SOCK=/tmp/ssh-agent.sock" >> "$ENV_FILE"
+elif [[ -d "${HOME}/.ssh" ]]; then
+    VOLUME_FLAGS+=(-v "${HOME}/.ssh:/home/opencode/.ssh:ro")
+fi
+
+# Persistent config volume (tui.json, opencode.json user edits)
+# Must be mounted BEFORE the subdirectory bind-mounts so they overlay on top.
+VOLUME_FLAGS+=(-v "opencode-config:/home/opencode/.config/opencode")
+
+# Global agents, skills, commands from this repo (read-only)
+# These bind-mounts overlay specific subdirectories inside the config volume.
+VOLUME_FLAGS+=(-v "${REPO_ROOT}/.opencode/agents:/home/opencode/.config/opencode/agents:ro")
+VOLUME_FLAGS+=(-v "${REPO_ROOT}/.opencode/skills:/home/opencode/.config/opencode/skills:ro")
+VOLUME_FLAGS+=(-v "${REPO_ROOT}/.opencode/commands:/home/opencode/.config/opencode/commands:ro")
+
+# Reference directories (read-only)
+for ref in "${REF_DIRS[@]+"${REF_DIRS[@]}"}"; do
+    ref_abs="$(cd "$ref" 2>/dev/null && pwd)" || die "reference path does not exist: $ref"
+    ref_name="$(basename "$ref_abs")"
+    VOLUME_FLAGS+=(-v "${ref_abs}:/reference/${ref_name}:ro")
+done
+
+# Persistent state volume (theme, model selection, prompt history)
+VOLUME_FLAGS+=(-v "opencode-state:/home/opencode/.local/state/opencode")
+
+# Persistent data volume (sessions, auth, snapshots)
+VOLUME_FLAGS+=(-v "opencode-data:/home/opencode/.local/share/opencode")
+
+# ---------------------------------------------------------------------------
+# Run
+# ---------------------------------------------------------------------------
+
+# Use the workspace directory name as part of the container name for clarity.
+# Sanitize to Docker's allowed charset: [a-zA-Z0-9_.-], must start alphanum.
+WORKSPACE_NAME="$(basename "$WORKSPACE" | tr -c 'a-zA-Z0-9_.-' '-' | sed 's/^[^a-zA-Z0-9]/x/')"
+[[ -z "$WORKSPACE_NAME" ]] && WORKSPACE_NAME="workspace"
+CONTAINER_NAME="${CONTAINER_PREFIX}-${WORKSPACE_NAME}"
+
+# Only attach a TTY when stdin is a terminal (allows non-interactive / CI usage)
+DOCKER_FLAGS=(--rm --interactive)
+if [[ -t 0 ]]; then
+    DOCKER_FLAGS+=(--tty)
+fi
+
+info "Workspace: ${WORKSPACE}"
+for ref in "${REF_DIRS[@]+"${REF_DIRS[@]}"}"; do
+    ref_abs="$(cd "$ref" 2>/dev/null && pwd)"
+    info "Reference: ${ref_abs} -> /reference/$(basename "$ref_abs")"
+done
+info "Container: ${CONTAINER_NAME}"
+
+exec docker run \
+    "${DOCKER_FLAGS[@]}" \
+    --name "$CONTAINER_NAME" \
+    --security-opt no-new-privileges \
+    --cap-drop ALL \
+    --env-file "$ENV_FILE" \
+    "${VOLUME_FLAGS[@]}" \
+    "$IMAGE_NAME" \
+    "${OPENCODE_ARGS[@]+"${OPENCODE_ARGS[@]}"}"

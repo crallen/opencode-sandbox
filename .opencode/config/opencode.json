@@ -1,0 +1,30 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "architect",
+  "autoupdate": false,
+  "permission": {
+    "read": {
+      "*": "allow",
+      ".env": "deny",
+      "*.env": "deny",
+      "*.env.*": "deny",
+      ".env.example": "allow",
+      "*.env.example": "allow"
+    },
+    "edit": {
+      "*": "allow",
+      "/reference/*": "deny"
+    },
+    "bash": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "task": "allow",
+    "skill": "allow",
+    "question": "allow",
+    "external_directory": {
+      "*": "deny",
+      "/reference/*": "allow"
+    }
+  }
+}
