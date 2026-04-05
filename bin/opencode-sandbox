@@ -27,8 +27,10 @@ set -euo pipefail
 IMAGE_NAME="opencode-sandbox"
 CONTAINER_PREFIX="opencode-sandbox"
 
-# Resolve the repo root (where this script lives is bin/, go one level up)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve the repo root (where this script lives is bin/, go one level up).
+# Use readlink -f to resolve symlinks so this works when the script is
+# symlinked into a directory on PATH (e.g. ~/.local/bin/).
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # ---------------------------------------------------------------------------
