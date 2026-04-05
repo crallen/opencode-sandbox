@@ -28,11 +28,20 @@ RUN mkdir -p /home/opencode/.local/share/opencode \
 # Switch to non-root user for install
 USER opencode
 
+# Install nvm and latest Node.js LTS
+ENV NVM_DIR="/home/opencode/.nvm"
+RUN curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash \
+    && . "$NVM_DIR/nvm.sh" \
+    && nvm install --lts \
+    && nvm alias default lts/* \
+    && nvm cache clear \
+    && ln -s "$(nvm which default | xargs dirname)" "$NVM_DIR/current"
+
 # Install OpenCode via official install script
 RUN curl -fsSL https://opencode.ai/install | bash
 
-# Ensure opencode is on PATH and configure terminal
-ENV PATH="/home/opencode/.local/bin:/home/opencode/.opencode/bin:${PATH}" \
+# Ensure opencode, nvm, and node are on PATH and configure terminal
+ENV PATH="/home/opencode/.local/bin:/home/opencode/.opencode/bin:${NVM_DIR}/current:${PATH}" \
     TERM=xterm-256color \
     COLORTERM=truecolor
 

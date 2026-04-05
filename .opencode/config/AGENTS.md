@@ -10,7 +10,7 @@ This workspace runs inside a Docker container:
 - **User**: `opencode` (non-root, uid/gid 1000)
 - **Workspace**: `/workspace` (mounted from host, read-write)
 - **Reference projects**: `/reference/<name>/` (read-only, optional — see below)
-- **Tools available**: `git`, `curl`, `jq`, `ripgrep`, `openssh-client`
+- **Tools available**: `git`, `curl`, `jq`, `ripgrep`, `openssh-client`, `node`, `npm`, `nvm`
 - **Not available**: `docker`, `sudo`, `apt-get` (non-root, no package installation)
 - **SSH keys**: Mounted read-only from host at `~/.ssh`
 - **Git config**: Mounted read-only from host at `~/.gitconfig`

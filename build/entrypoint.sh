@@ -37,6 +37,12 @@ if [ -z "${SSH_AUTH_SOCK:-}" ] && { [ ! -d "$HOME/.ssh" ] || [ -z "$(ls -A "$HOM
     echo "         Start an ssh-agent on the host, or ensure ~/.ssh exists with keys."
 fi
 
+# --- Source nvm ---
+# Makes the nvm shell function available so users can switch Node.js versions.
+export NVM_DIR="$HOME/.nvm"
+# shellcheck source=/dev/null
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
 # --- Launch OpenCode ---
 
 exec opencode "$@"
