@@ -14,4 +14,4 @@ uv python install "$PYTHON_VERSION" --default
 uv cache clean
 
 python --version
-uv pip --version
+uv --version
