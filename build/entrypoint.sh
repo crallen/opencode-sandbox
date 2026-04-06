@@ -29,6 +29,8 @@ CURRENT_GID="$(id -g "$TARGET_USER")"
 # Shared helpers — used by both root and non-root paths
 # ---------------------------------------------------------------------------
 
+info() { echo "==> $1"; }
+
 # Sync repo-managed config files into the persistent config volume.
 # Files like AGENTS.md and opencode.json are repo-managed — they define the
 # agent suite and permissions and must always reflect the latest version from
@@ -66,6 +68,8 @@ preflight_checks() {
 # ---------------------------------------------------------------------------
 
 if [ "$(id -u)" = "0" ]; then
+    info "Preparing environment..."
+
     # Determine desired UID/GID — prefer explicit env vars, fall back to
     # the ownership of /workspace (which reflects the host user on Linux).
     HOST_UID="${HOST_UID:-$(stat -c '%u' /workspace 2>/dev/null || echo "$CURRENT_UID")}"
@@ -83,65 +87,87 @@ if [ "$(id -u)" = "0" ]; then
         HOST_GID="$CURRENT_GID"
     fi
 
+    NEEDS_REMAP=false
+
     # --- Remap GID if needed ---
     if [ "$HOST_GID" != "$CURRENT_GID" ]; then
+        NEEDS_REMAP=true
         if getent group "$HOST_GID" >/dev/null 2>&1; then
             # Target GID already taken (e.g. macOS GID 20 = dialout).
             # Point the opencode user at the existing group.
             EXISTING_GROUP="$(getent group "$HOST_GID" | cut -d: -f1)"
             usermod -g "$EXISTING_GROUP" "$TARGET_USER" 2>/dev/null || \
-                sed -i "s/^\(${TARGET_USER}:[^:]*:[^:]*:\)[0-9]*/\1${HOST_GID}/" /etc/passwd
+                sed -i "s/^\(${TARGET_USER}:[^:]*:[^:]*:\)[0-9]\+/\1${HOST_GID}/" /etc/passwd
         else
             groupmod -g "$HOST_GID" opencode 2>/dev/null || \
-                sed -i "s/^\(opencode:[^:]*:\)[0-9]*/\1${HOST_GID}/" /etc/group
+                sed -i "s/^\(opencode:[^:]*:\)[0-9]\+/\1${HOST_GID}/" /etc/group
         fi
     fi
 
     # --- Remap UID if needed ---
     if [ "$HOST_UID" != "$CURRENT_UID" ]; then
+        NEEDS_REMAP=true
         # Use sed to edit /etc/passwd directly — avoids usermod's attempt to
         # chown the home directory, which can fail on large trees or volumes.
-        sed -i "s/^\(${TARGET_USER}:[^:]*:\)[0-9]*/\1${HOST_UID}/" /etc/passwd
+        sed -i "s/^\(${TARGET_USER}:[^:]*:\)[0-9]\+/\1${HOST_UID}/" /etc/passwd
     fi
 
-    # Fix ownership of writable paths only. We intentionally skip:
-    #   - .nvm/ (~5000 files, read-only after build, chown on overlay fs takes 30s+)
-    #     NOTE: This means `nvm install` will fail when UID != 1000. The
-    #     pre-installed LTS node remains usable via $NVM_DIR/current on PATH.
-    #   - Read-only bind-mounts under .config/opencode/ (agents, skills, commands)
-    #
-    # The home directory itself must be owned by the user so that tools
-    # (opencode, npm, etc.) can create subdirs like .cache at runtime.
-    chown "${HOST_UID}:${HOST_GID}" /home/opencode
+    # --- Fix file ownership if needed ---
+    # Recursive chown on persistent volumes (session data, state, cache) is
+    # the main startup cost and grows with usage. We use a sentinel file to
+    # track whether a previous run already completed the chown for this
+    # UID:GID pair. This is safe against interrupted runs — if the container
+    # is killed mid-chown, the sentinel won't exist and the next run retries.
+    CHOWN_SENTINEL="/home/opencode/.chown_done_${HOST_UID}_${HOST_GID}"
 
-    # Writable subdirectories
-    for dir in \
-        /home/opencode/.local \
-        /home/opencode/.cache \
-        /home/opencode/.opencode \
-    ; do
-        [ -e "$dir" ] && chown -R "${HOST_UID}:${HOST_GID}" "$dir"
-    done
+    if [ "$NEEDS_REMAP" = true ] && [ ! -f "$CHOWN_SENTINEL" ]; then
+        info "Adjusting file ownership to ${HOST_UID}:${HOST_GID}..."
 
-    # Writable files in home
-    for f in \
-        /home/opencode/.bashrc \
-        /home/opencode/.bash_logout \
-        /home/opencode/.profile \
-    ; do
-        [ -e "$f" ] && chown "${HOST_UID}:${HOST_GID}" "$f"
-    done
+        # Fix ownership of writable paths only. We intentionally skip:
+        #   - .nvm/ (~5000 files, read-only after build, chown on overlay fs takes 30s+)
+        #     NOTE: This means `nvm install` will fail when UID != 1000. The
+        #     pre-installed LTS node remains usable via $NVM_DIR/current on PATH.
+        #   - Read-only bind-mounts under .config/opencode/ (agents, skills, commands)
+        #
+        # The home directory itself must be owned by the user so that tools
+        # (opencode, npm, etc.) can create subdirs like .cache at runtime.
+        chown "${HOST_UID}:${HOST_GID}" /home/opencode
 
-    # .config — chown the directory and its direct writable contents, but
-    # skip the read-only bind-mounted subdirs (agents, skills, commands).
-    chown "${HOST_UID}:${HOST_GID}" /home/opencode/.config
-    chown "${HOST_UID}:${HOST_GID}" /home/opencode/.config/opencode 2>/dev/null || true
-    # Chown writable files in config (opencode.json, AGENTS.md, tui.json, etc.)
-    find /home/opencode/.config/opencode -maxdepth 1 -type f -exec \
-        chown "${HOST_UID}:${HOST_GID}" {} + 2>/dev/null || true
-    # Chown the defaults dir (always writable, baked into the image)
-    [ -d /home/opencode/.config/opencode.defaults ] && \
-        chown -R "${HOST_UID}:${HOST_GID}" /home/opencode/.config/opencode.defaults
+        # Writable subdirectories
+        for dir in \
+            /home/opencode/.local \
+            /home/opencode/.cache \
+            /home/opencode/.opencode \
+        ; do
+            [ -e "$dir" ] && chown -R "${HOST_UID}:${HOST_GID}" "$dir"
+        done
+
+        # Writable files in home
+        for f in \
+            /home/opencode/.bashrc \
+            /home/opencode/.bash_logout \
+            /home/opencode/.profile \
+        ; do
+            [ -e "$f" ] && chown "${HOST_UID}:${HOST_GID}" "$f"
+        done
+
+        # .config — chown the directory and its direct writable contents, but
+        # skip the read-only bind-mounted subdirs (agents, skills, commands).
+        chown "${HOST_UID}:${HOST_GID}" /home/opencode/.config
+        chown "${HOST_UID}:${HOST_GID}" /home/opencode/.config/opencode 2>/dev/null || true
+        # Chown writable files in config (opencode.json, AGENTS.md, tui.json, etc.)
+        find /home/opencode/.config/opencode -maxdepth 1 -type f -exec \
+            chown "${HOST_UID}:${HOST_GID}" {} + 2>/dev/null || true
+        # Chown the defaults dir (always writable, baked into the image)
+        [ -d /home/opencode/.config/opencode.defaults ] && \
+            chown -R "${HOST_UID}:${HOST_GID}" /home/opencode/.config/opencode.defaults
+
+        # Mark chown as complete. Remove stale sentinels from previous UID/GID
+        # pairs first so only the current one remains.
+        rm -f /home/opencode/.chown_done_* 2>/dev/null || true
+        touch "$CHOWN_SENTINEL"
+        chown "${HOST_UID}:${HOST_GID}" "$CHOWN_SENTINEL"
+    fi
 
     # --- Sync config & pre-flight checks ---
     sync_config "/home/opencode/.config/opencode" \
@@ -150,6 +176,7 @@ if [ "$(id -u)" = "0" ]; then
     preflight_checks "/home/opencode"
 
     # --- Drop privileges and launch OpenCode ---
+    info "Starting OpenCode..."
     # gosu replaces this process with the target user — root is gone.
     # $NVM_DIR/current is already on PATH (set in Dockerfile), so we don't
     # need to source nvm.sh (which may fail to write cache files when .nvm
@@ -163,6 +190,8 @@ fi
 # ---------------------------------------------------------------------------
 # No remapping possible; just sync config, check environment, and run.
 
+info "Preparing environment..."
+
 sync_config "$HOME/.config/opencode" "$HOME/.config/opencode.defaults"
 preflight_checks "$HOME"
 
@@ -170,4 +199,5 @@ export NVM_DIR="$HOME/.nvm"
 # shellcheck source=/dev/null
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
+info "Starting OpenCode..."
 exec opencode "$@"
