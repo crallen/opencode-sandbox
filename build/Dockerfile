@@ -1,21 +1,20 @@
 FROM debian:bookworm-slim@sha256:f06537653ac770703bc45b4b113475bd402f451e85223f0f2837acbf89ab020a
 
-ARG UID=1000
-ARG GID=1000
-
-# Install dependencies for agentic workflows
+# Install dependencies for agentic workflows + gosu for runtime privilege dropping
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     git \
+    gosu \
     jq \
     openssh-client \
     ripgrep \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && gosu nobody true
 
-# Create non-root user with configurable UID/GID
-RUN groupadd -g "${GID}" opencode \
-    && useradd -m -u "${UID}" -g opencode -s /bin/bash opencode
+# Create non-root user with default UID/GID (remapped at runtime by entrypoint)
+RUN groupadd -g 1000 opencode \
+    && useradd -m -u 1000 -g opencode -s /bin/bash opencode
 
 # Create directories that will be used for volumes
 RUN mkdir -p /home/opencode/.local/share/opencode \
@@ -25,7 +24,7 @@ RUN mkdir -p /home/opencode/.local/share/opencode \
              /reference \
     && chown -R opencode:opencode /home/opencode /workspace /reference
 
-# Switch to non-root user for install
+# Switch to non-root user for install steps (nvm, opencode, node)
 USER opencode
 
 # Install nvm and latest Node.js LTS
@@ -56,7 +55,12 @@ RUN mkdir -p /home/opencode/.config/opencode.defaults
 COPY --chown=opencode:opencode .opencode/config/opencode.json /home/opencode/.config/opencode.defaults/opencode.json
 COPY --chown=opencode:opencode .opencode/config/AGENTS.md /home/opencode/.config/opencode.defaults/AGENTS.md
 
-COPY --chown=opencode:opencode build/entrypoint.sh /home/opencode/entrypoint.sh
+# Switch back to root so entrypoint can remap UID/GID before dropping privileges.
+# NOTE: Final USER is root intentionally — the entrypoint handles privilege
+# dropping via gosu after remapping. Do not add "USER opencode" after this line.
+USER root
+
+COPY build/entrypoint.sh /home/opencode/entrypoint.sh
 RUN chmod +x /home/opencode/entrypoint.sh
 
 WORKDIR /workspace

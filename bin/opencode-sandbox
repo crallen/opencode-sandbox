@@ -136,8 +136,6 @@ fi
 build_image() {
     info "Building ${IMAGE_NAME} image..."
     local build_args=(
-        --build-arg "UID=$(id -u)"
-        --build-arg "GID=$(id -g)"
         -t "$IMAGE_NAME"
         -f "${REPO_ROOT}/build/Dockerfile"
     )
@@ -162,6 +160,10 @@ fi
 ENV_FILE="$(mktemp)"
 trap 'rm -f "$ENV_FILE"' EXIT
 chmod 600 "$ENV_FILE"
+
+# Pass host UID/GID so the entrypoint can remap the container user at runtime
+echo "HOST_UID=$(id -u)" >> "$ENV_FILE"
+echo "HOST_GID=$(id -g)" >> "$ENV_FILE"
 
 # Well-known LLM provider keys — pass through any that are set
 for var in \
@@ -261,11 +263,20 @@ for ref in "${REF_DIRS[@]+"${REF_DIRS[@]}"}"; do
 done
 info "Container: ${CONTAINER_NAME}"
 
+# no-new-privileges prevents privilege escalation via setuid binaries during
+# execve. The entrypoint needs CHOWN/FOWNER/DAC_OVERRIDE to fix file ownership
+# and SETUID/SETGID for gosu to DROP from root to the opencode user (which uses
+# direct setuid()/setgid() syscalls and is always permitted under no-new-privs).
 exec docker run \
     "${DOCKER_FLAGS[@]}" \
     --name "$CONTAINER_NAME" \
     --security-opt no-new-privileges \
     --cap-drop ALL \
+    --cap-add CHOWN \
+    --cap-add DAC_OVERRIDE \
+    --cap-add FOWNER \
+    --cap-add SETUID \
+    --cap-add SETGID \
     --env-file "$ENV_FILE" \
     "${VOLUME_FLAGS[@]}" \
     "$IMAGE_NAME" \
