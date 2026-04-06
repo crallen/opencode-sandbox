@@ -21,7 +21,7 @@ ln -s "$(pwd)/bin/opencode-sandbox" ~/.local/bin/opencode-sandbox
 ANTHROPIC_API_KEY=sk-... opencode-sandbox ~/projects/myapp
 ```
 
-The Docker image is built automatically on first run.
+The launcher pulls the image from GHCR automatically on first run.
 
 ## Usage
 
@@ -36,11 +36,21 @@ If `workspace-path` is omitted, the current directory is used.
 | Flag | Description |
 |---|---|
 | `-r, --ref DIR` | Mount a read-only reference directory (repeatable) |
-| `--build` | Force rebuild the Docker image |
-| `--pull` | Pull the latest base image before building |
+| `--pull` | Check GHCR for a newer image and pull if the digest has changed |
+| `--build` | Build the Docker image locally from source |
+| `--build --pull` | Build locally, refreshing the base image first |
 | `-h, --help` | Show help |
 
 Everything after `--` is forwarded to the `opencode` binary inside the container.
+
+### Flag Behavior
+
+| Invocation | Behavior |
+|---|---|
+| `opencode-sandbox` | Use cached GHCR image if present; pull on first run |
+| `opencode-sandbox --pull` | Digest-check GHCR; pull only if outdated |
+| `opencode-sandbox --build` | Build locally → `opencode-sandbox` image |
+| `opencode-sandbox --build --pull` | Build locally, refreshing base image first |
 
 ### Examples
 
@@ -54,7 +64,10 @@ opencode-sandbox ~/projects/myapp
 # Mount sibling projects as read-only references
 opencode-sandbox -r ../shared-lib -r ../api-contracts ~/projects/myapp
 
-# Force a rebuild (e.g. after updating agents or skills)
+# Update to the latest GHCR image
+opencode-sandbox --pull .
+
+# Build locally from source (dev workflow)
 opencode-sandbox --build .
 
 # Pass flags to opencode itself
@@ -104,7 +117,7 @@ The entrypoint warns at startup if git config or SSH access is missing.
 - **Python**: 3.13.x — `python`, `python3` (prebuilt via uv); use `uv pip` for package installation, `uvx` for one-off tool execution
 - **Workspace**: `/workspace` (read-write, your project)
 - **References**: `/reference/<name>/` (read-only, via `--ref`)
-- **Session data**: Persisted in a Docker named volume (`opencode-data`)
+- **Session data**: Persisted in a Docker named volume scoped per workspace (`opencode-data-<workspace-name>`) — sessions and history are isolated between projects
 - **User state**: Persisted in a Docker named volume (`opencode-state`) — theme selection, model preference, prompt history survive restarts
 - **User settings**: Persisted in a Docker named volume (`opencode-config`) — `tui.json`, `opencode.json` edits survive restarts
 
@@ -193,6 +206,16 @@ The global `opencode.json` sets these defaults:
 - `/reference/*` — read, search, and list allowed; edits denied
 - External directories — denied by default (only `/reference/*` is allowlisted)
 - `.env` files — read denied (prevents accidental secret exposure)
+
+## CI & Published Image
+
+The image is built and published to GHCR via GitHub Actions on every `v*` tag push:
+
+- **Registry**: `ghcr.io/crallen/opencode-sandbox`
+- **Architectures**: `linux/amd64` and `linux/arm64`
+- **Tags published**: `latest`, `<major>`, `<major>.<minor>`, `<major>.<minor>.<patch>`
+
+On non-tag pushes to `main`, the workflow runs a build-only smoke test without pushing to the registry.
 
 ## Customization
 
