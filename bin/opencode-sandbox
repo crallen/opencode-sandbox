@@ -8,8 +8,9 @@
 #
 # Options:
 #   -r, --ref DIR    Mount DIR as a read-only reference directory (repeatable)
-#   --build          Force rebuild the Docker image
-#   --pull           Pull base image before building
+#   --build          Build the Docker image locally from source
+#   --pull           Pull latest image from GHCR; or refresh base image when
+#                    combined with --build
 #   -h, --help       Show this help message
 #
 # If workspace-path is omitted, the current directory is used.
@@ -24,7 +25,12 @@ set -euo pipefail
 # Constants
 # ---------------------------------------------------------------------------
 
-IMAGE_NAME="opencode-sandbox"
+# Image pulled from GHCR on the default (no --build) path
+GHCR_IMAGE="ghcr.io/crallen/opencode-sandbox:latest"
+
+# Image name used when building locally (--build path)
+LOCAL_IMAGE="opencode-sandbox"
+
 CONTAINER_PREFIX="opencode-sandbox"
 
 # Resolve the repo root (where this script lives is bin/, go one level up).
@@ -45,7 +51,8 @@ usage() {
     echo "  opencode-sandbox ~/projects/myapp                   # explicit workspace"
     echo "  opencode-sandbox -r ~/projects/lib-a .              # with a reference dir"
     echo "  opencode-sandbox -r ../lib-a -r ../lib-b ~/myapp    # multiple references"
-    echo "  opencode-sandbox --build .                          # force rebuild"
+    echo "  opencode-sandbox --pull .                           # update to latest GHCR image"
+    echo "  opencode-sandbox --build .                          # build locally from source"
     echo "  opencode-sandbox . -- --version                     # pass flags to opencode"
     exit 0
 }
@@ -64,7 +71,7 @@ info() {
 # ---------------------------------------------------------------------------
 
 FORCE_BUILD=false
-PULL_BASE=false
+FORCE_PULL=false
 WORKSPACE=""
 REF_DIRS=()
 OPENCODE_ARGS=()
@@ -81,7 +88,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --pull)
-            PULL_BASE=true
+            FORCE_PULL=true
             shift
             ;;
         -h|--help)
@@ -130,26 +137,59 @@ if [[ ${#REF_DIRS[@]} -gt 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Build the image (if needed)
+# Resolve the image to run
 # ---------------------------------------------------------------------------
 
 build_image() {
-    info "Building ${IMAGE_NAME} image..."
+    info "Building ${LOCAL_IMAGE} image..."
     local build_args=(
-        -t "$IMAGE_NAME"
+        -t "$LOCAL_IMAGE"
         -f "${REPO_ROOT}/build/Dockerfile"
     )
-    if [[ "$PULL_BASE" == true ]]; then
+    if [[ "$FORCE_PULL" == true ]]; then
         build_args+=(--pull)
     fi
     docker build "${build_args[@]}" "$REPO_ROOT"
 }
 
+pull_image() {
+    local remote_digest local_digest
+
+    remote_digest="$(docker buildx imagetools inspect "$GHCR_IMAGE" \
+        --format '{{.Manifest.Digest}}' 2>/dev/null)"
+
+    if [[ -z "$remote_digest" ]]; then
+        # Registry unreachable — fall back to local if it exists, else let
+        # docker pull fail with a meaningful error message.
+        if docker image inspect "$GHCR_IMAGE" &>/dev/null; then
+            info "Could not reach registry, using cached image"
+            return
+        fi
+        info "Pulling ${GHCR_IMAGE}..."
+        docker pull "$GHCR_IMAGE"
+        return
+    fi
+
+    local_digest="$(docker image inspect "$GHCR_IMAGE" \
+        --format '{{index .RepoDigests 0}}' 2>/dev/null | cut -d@ -f2)"
+
+    if [[ -n "$local_digest" && "$local_digest" == "$remote_digest" ]]; then
+        info "Already up to date (${remote_digest})"
+        return
+    fi
+
+    info "Pulling ${GHCR_IMAGE}..."
+    docker pull "$GHCR_IMAGE"
+}
+
 if [[ "$FORCE_BUILD" == true ]]; then
     build_image
-elif ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
-    info "Image ${IMAGE_NAME} not found, building..."
-    build_image
+    RUN_IMAGE="$LOCAL_IMAGE"
+elif [[ "$FORCE_PULL" == true ]] || ! docker image inspect "$GHCR_IMAGE" &>/dev/null; then
+    pull_image
+    RUN_IMAGE="$GHCR_IMAGE"
+else
+    RUN_IMAGE="$GHCR_IMAGE"
 fi
 
 # ---------------------------------------------------------------------------
@@ -243,11 +283,12 @@ VOLUME_FLAGS+=(-v "opencode-data:/home/opencode/.local/share/opencode")
 # Sanitize to Docker's allowed charset: [a-zA-Z0-9_.-], must start alphanum.
 # Strip trailing dashes produced by tr replacing the trailing newline, and
 # avoid doubling the prefix when the workspace folder is named identically.
+# Append the shell PID to guarantee uniqueness across concurrent invocations.
 WORKSPACE_NAME="$(basename "$WORKSPACE" | tr -c 'a-zA-Z0-9_.-' '-' | sed 's/^[^a-zA-Z0-9]/x/; s/-*$//')"
 if [[ -z "$WORKSPACE_NAME" || "$WORKSPACE_NAME" == "$CONTAINER_PREFIX" ]]; then
-    CONTAINER_NAME="$CONTAINER_PREFIX"
+    CONTAINER_NAME="${CONTAINER_PREFIX}-$$"
 else
-    CONTAINER_NAME="${CONTAINER_PREFIX}-${WORKSPACE_NAME}"
+    CONTAINER_NAME="${CONTAINER_PREFIX}-${WORKSPACE_NAME}-$$"
 fi
 
 # Only attach a TTY when stdin is a terminal (allows non-interactive / CI usage)
@@ -279,5 +320,5 @@ exec docker run \
     --cap-add SETGID \
     --env-file "$ENV_FILE" \
     "${VOLUME_FLAGS[@]}" \
-    "$IMAGE_NAME" \
+    "$RUN_IMAGE" \
     "${OPENCODE_ARGS[@]+"${OPENCODE_ARGS[@]}"}"
