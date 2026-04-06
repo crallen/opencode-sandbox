@@ -155,8 +155,12 @@ build_image() {
 pull_image() {
     local remote_digest local_digest
 
-    remote_digest="$(docker buildx imagetools inspect "$GHCR_IMAGE" \
-        --format '{{.Manifest.Digest}}' 2>/dev/null)"
+    # Compute the remote manifest digest. For multi-arch OCI image indexes the
+    # --format '{{.Manifest.Digest}}' template silently falls back to the full
+    # pretty-printed output, so we hash the raw manifest bytes ourselves — this
+    # is exactly how registries compute digests per the OCI spec.
+    remote_digest="$(docker buildx imagetools inspect "$GHCR_IMAGE" --raw 2>/dev/null \
+        | sha256sum | awk '{print "sha256:"$1}')"
 
     if [[ -z "$remote_digest" ]]; then
         # Registry unreachable — fall back to local if it exists, else let
@@ -170,8 +174,11 @@ pull_image() {
         return
     fi
 
+    # Retrieve the local image digest. The `|| true` guard prevents `set -e`
+    # from killing the script when the image is not cached locally (docker
+    # image inspect exits non-zero and pipefail propagates the failure).
     local_digest="$(docker image inspect "$GHCR_IMAGE" \
-        --format '{{index .RepoDigests 0}}' 2>/dev/null | cut -d@ -f2)"
+        --format '{{index .RepoDigests 0}}' 2>/dev/null | cut -d@ -f2 || true)"
 
     if [[ -n "$local_digest" && "$local_digest" == "$remote_digest" ]]; then
         info "Already up to date (${remote_digest})"
@@ -269,6 +276,15 @@ for ref in "${REF_DIRS[@]+"${REF_DIRS[@]}"}"; do
     VOLUME_FLAGS+=(-v "${ref_abs}:/reference/${ref_name}:ro")
 done
 
+# ---------------------------------------------------------------------------
+# Derive workspace name (used for both volume naming and container naming)
+# ---------------------------------------------------------------------------
+
+# Sanitize to Docker's allowed charset: [a-zA-Z0-9_.-], must start alphanum.
+# Strip trailing dashes produced by tr replacing the trailing newline, and
+# avoid doubling the prefix when the workspace folder is named identically.
+WORKSPACE_NAME="$(basename "$WORKSPACE" | tr -c 'a-zA-Z0-9_.-' '-' | sed 's/^[^a-zA-Z0-9]/x/; s/-*$//')"
+
 # Persistent state volume (theme, model selection, prompt history)
 VOLUME_FLAGS+=(-v "opencode-state:/home/opencode/.local/state/opencode")
 
@@ -280,12 +296,7 @@ VOLUME_FLAGS+=(-v "opencode-data-${WORKSPACE_NAME}:/home/opencode/.local/share/o
 # Run
 # ---------------------------------------------------------------------------
 
-# Use the workspace directory name as part of the container name for clarity.
-# Sanitize to Docker's allowed charset: [a-zA-Z0-9_.-], must start alphanum.
-# Strip trailing dashes produced by tr replacing the trailing newline, and
-# avoid doubling the prefix when the workspace folder is named identically.
 # Append the shell PID to guarantee uniqueness across concurrent invocations.
-WORKSPACE_NAME="$(basename "$WORKSPACE" | tr -c 'a-zA-Z0-9_.-' '-' | sed 's/^[^a-zA-Z0-9]/x/; s/-*$//')"
 if [[ -z "$WORKSPACE_NAME" || "$WORKSPACE_NAME" == "$CONTAINER_PREFIX" ]]; then
     CONTAINER_NAME="${CONTAINER_PREFIX}-$$"
 else
