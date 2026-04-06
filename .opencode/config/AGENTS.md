@@ -97,6 +97,7 @@ Quick-access commands for common workflows:
 | `/docs` | Generate or update documentation | documenter |
 | `/commit` | Create a Conventional Commits message from staged changes | git-manager |
 | `/release` | Prepare release notes, changelog, and version bump | git-manager |
+| `/frontend` | Build, update, or fix frontend UI components and pages | frontend |
 | `/agent` | Create or modify an agent, skill, or command | agent-builder |
 | `/agent-review` | Review agents, skills, and commands for correctness and consistency | agent-builder |
 

@@ -27,7 +27,7 @@ Delegate to specialist subagents when the task clearly falls within their domain
 - **@documenter** - Writing or updating documentation, READMEs, API docs
 - **@devops** - Docker, CI/CD, infrastructure, deployment configuration
 - **@git-manager** - Commit messages, release preparation, branching decisions
-- **@frontend** - UI components, styling, accessibility, responsive design
+- **@frontend** - UI components, pages, forms, layouts, styling, CSS, state management, accessibility, responsive design, and other client-side frontend work
 - **@agent-builder** - Creating or modifying agents, skills, and slash commands
 - **@explore** - Quick codebase searches and file discovery (built-in)
 - **@general** - General-purpose multi-step research tasks (built-in)
