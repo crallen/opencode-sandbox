@@ -123,10 +123,18 @@ if [ "$(id -u)" = "0" ]; then
     if [ "$NEEDS_REMAP" = true ] && [ ! -f "$CHOWN_SENTINEL" ]; then
         info "Adjusting file ownership to ${HOST_UID}:${HOST_GID}..."
 
-        # Fix ownership of writable paths only. We intentionally skip:
-        #   - .nvm/ (~5000 files, read-only after build, chown on overlay fs takes 30s+)
-        #     NOTE: This means `nvm install` will fail when UID != 1000. The
-        #     pre-installed LTS node remains usable via $NVM_DIR/current on PATH.
+        # Fix ownership of writable paths only. We intentionally skip
+        # large read-only toolchain trees baked into the image — chowning
+        # them on every first run would be prohibitively slow:
+        #   - .nvm/      (~5000 files) — Node.js via nvm
+        #   - .rustup/   (~thousands of files) — Rust toolchain
+        #   - .cargo/    — Rust binaries and registry cache
+        #   - .local/share/uv/ — uv-managed Python installs
+        #   - /usr/local/go — Go standard library (root-owned, never chowned)
+        #   - ~/go/      — GOPATH; same tradeoff as .nvm (owned by build UID)
+        # NOTE: Tools installed into these trees after container start (e.g.
+        # `go install`, `cargo install`) will be owned by the runtime UID and
+        # work correctly. The pre-built binaries remain usable via PATH.
         #   - Read-only bind-mounts under .config/opencode/ (agents, skills, commands)
         #
         # The home directory itself must be owned by the user so that tools
@@ -196,6 +204,10 @@ sync_config "$HOME/.config/opencode" "$HOME/.config/opencode.defaults"
 preflight_checks "$HOME"
 
 export NVM_DIR="$HOME/.nvm"
+# Source nvm.sh to enable `nvm` shell functions (e.g. `nvm install`, `nvm use`).
+# The `node` binary itself works without this via the $NVM_DIR/current symlink
+# on PATH. Rust, Go, and Python binaries similarly work without sourcing because
+# their bin directories are on PATH directly via the Dockerfile ENV.
 # shellcheck source=/dev/null
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 

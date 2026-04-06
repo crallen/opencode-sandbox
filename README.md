@@ -98,6 +98,10 @@ The entrypoint warns at startup if git config or SSH access is missing.
 - **Base**: Debian bookworm-slim (minimal CVE surface)
 - **User**: `opencode` (non-root, UID/GID matched to host)
 - **Tools**: `git`, `curl`, `jq`, `ripgrep`, `openssh-client`
+- **Node.js**: LTS release (via nvm)
+- **Rust**: latest stable toolchain — `rustc`, `cargo` (via rustup, minimal profile)
+- **Go**: `go` 1.26.x (official tarball, pure-Go mode by default)
+- **Python**: 3.13.x — `python`, `python3` (prebuilt via uv); use `uv pip` for package installation, `uvx` for one-off tool execution
 - **Workspace**: `/workspace` (read-write, your project)
 - **References**: `/reference/<name>/` (read-only, via `--ref`)
 - **Session data**: Persisted in a Docker named volume (`opencode-data`)
@@ -159,8 +163,13 @@ opencode-sandbox/
 ├── bin/
 │   └── opencode-sandbox          # Launcher script (the only thing you run)
 ├── build/
-│   ├── Dockerfile                # Debian bookworm-slim, non-root user, OpenCode install
-│   └── entrypoint.sh             # Pre-flight checks, exec opencode
+│   ├── Dockerfile                # Debian bookworm-slim, polyglot toolchains, OpenCode
+│   ├── entrypoint.sh             # UID/GID remapping, pre-flight checks, exec opencode
+│   └── scripts/
+│       ├── install-go.sh         # Go — pinned version, edit to upgrade
+│       ├── install-rust.sh       # Rust — latest stable channel (via rustup)
+│       ├── install-node.sh       # Node.js — latest LTS channel (via nvm)
+│       └── install-python.sh     # Python — pinned version (via uv)
 ├── .opencode/
 │   ├── config/
 │   │   ├── opencode.json         # Global config (baked into image)
