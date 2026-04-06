@@ -272,8 +272,9 @@ done
 # Persistent state volume (theme, model selection, prompt history)
 VOLUME_FLAGS+=(-v "opencode-state:/home/opencode/.local/state/opencode")
 
-# Persistent data volume (sessions, auth, snapshots)
-VOLUME_FLAGS+=(-v "opencode-data:/home/opencode/.local/share/opencode")
+# Persistent data volume (sessions, snapshots, logs — scoped per workspace to
+# avoid SQLite WAL contention and session bleed between unrelated projects)
+VOLUME_FLAGS+=(-v "opencode-data-${WORKSPACE_NAME}:/home/opencode/.local/share/opencode")
 
 # ---------------------------------------------------------------------------
 # Run
