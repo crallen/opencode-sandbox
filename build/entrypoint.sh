@@ -183,6 +183,13 @@ if [ "$(id -u)" = "0" ]; then
                 "${HOST_UID}:${HOST_GID}"
     preflight_checks "/home/opencode"
 
+    # --- Configure git safe directory ---
+    # /workspace is a bind-mount owned by the host user. Git refuses to
+    # operate in directories not owned by the current user, so we register
+    # /workspace as a safe directory for the opencode user. This must be done
+    # as root writing to the opencode user's gitconfig before dropping privs.
+    gosu "$TARGET_USER" git config --global --add safe.directory /workspace 2>/dev/null || true
+
     # --- Drop privileges and launch OpenCode ---
     info "Starting OpenCode..."
     # gosu replaces this process with the target user — root is gone.
@@ -202,6 +209,10 @@ info "Preparing environment..."
 
 sync_config "$HOME/.config/opencode" "$HOME/.config/opencode.defaults"
 preflight_checks "$HOME"
+
+# /workspace is a bind-mount that may be owned by a different UID than the
+# container user. Register it as a git safe directory so git commands work.
+git config --global --add safe.directory /workspace 2>/dev/null || true
 
 export NVM_DIR="$HOME/.nvm"
 # Source nvm.sh to enable `nvm` shell functions (e.g. `nvm install`, `nvm use`).
