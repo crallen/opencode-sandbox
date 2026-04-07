@@ -12,7 +12,7 @@ This workspace runs inside a Docker container:
 - **Reference projects**: `/reference/<name>/` (read-only, optional — see below)
 - **Tools available**: `git`, `curl`, `jq`, `ripgrep`, `openssh-client`, `node`, `npm`, `nvm`, `rustc`, `cargo`, `go`, `python`, `python3`, `uv`, `uvx`
 - **Not available**: `docker`, `sudo`, `apt-get` (non-root, no package installation)
-- **SSH keys**: Mounted read-only from host at `~/.ssh`
+- **SSH keys**: A single private key is mounted read-only at `~/.ssh/id` (macOS hosts); on Linux hosts the SSH agent socket is forwarded instead. `GIT_SSH_COMMAND` is set automatically so git and cargo use the correct key without reading `~/.ssh/config`.
 - **Git config**: Mounted read-only from host at `~/.gitconfig`
 
 Do not attempt to install system packages or run Docker commands from within the container.

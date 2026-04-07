@@ -8,6 +8,9 @@
 #
 # Options:
 #   -r, --ref DIR    Mount DIR as a read-only reference directory (repeatable)
+#   -k, --key FILE   SSH private key to mount for git/cargo authentication.
+#                    Defaults to ~/.ssh/id_ed25519 or ~/.ssh/id_rsa (whichever
+#                    exists). Ignored on Linux where agent forwarding is used.
 #   --build          Build the Docker image locally from source
 #   --pull           Pull latest image from GHCR; or refresh base image when
 #                    combined with --build
@@ -51,6 +54,7 @@ usage() {
     echo "  opencode-sandbox ~/projects/myapp                   # explicit workspace"
     echo "  opencode-sandbox -r ~/projects/lib-a .              # with a reference dir"
     echo "  opencode-sandbox -r ../lib-a -r ../lib-b ~/myapp    # multiple references"
+    echo "  opencode-sandbox -k ~/.ssh/my_key ~/projects/myapp  # explicit SSH key"
     echo "  opencode-sandbox --pull .                           # update to latest GHCR image"
     echo "  opencode-sandbox --build .                          # build locally from source"
     echo "  opencode-sandbox . -- --version                     # pass flags to opencode"
@@ -75,12 +79,18 @@ FORCE_PULL=false
 WORKSPACE=""
 REF_DIRS=()
 OPENCODE_ARGS=()
+SSH_KEY=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -r|--ref)
             [[ $# -ge 2 ]] || die "--ref requires a directory argument"
             REF_DIRS+=("$2")
+            shift 2
+            ;;
+        -k|--key)
+            [[ $# -ge 2 ]] || die "--key requires a file argument"
+            SSH_KEY="$2"
             shift 2
             ;;
         --build)
@@ -237,8 +247,15 @@ for var in \
 done
 
 # ---------------------------------------------------------------------------
-# Assemble volume mounts
+# Assemble docker flags, volume mounts, and ssh forwarding
 # ---------------------------------------------------------------------------
+
+# Initialize flag arrays early so both the SSH block and the run block can
+# append to them during assembly.
+DOCKER_FLAGS=(--rm --interactive)
+if [[ -t 0 ]]; then
+    DOCKER_FLAGS+=(--tty)
+fi
 
 VOLUME_FLAGS=()
 
@@ -250,13 +267,54 @@ if [[ -f "${HOME}/.gitconfig" ]]; then
     VOLUME_FLAGS+=(-v "${HOME}/.gitconfig:/home/opencode/.gitconfig:ro")
 fi
 
-# Host SSH — prefer agent forwarding (exposes no private key files), fall back
-# to mounting the directory read-only if the agent socket is not available.
-if [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
-    VOLUME_FLAGS+=(-v "${SSH_AUTH_SOCK}:/tmp/ssh-agent.sock:ro")
+# Host SSH agent forwarding.
+#
+# On macOS, Docker Desktop runs containers in a Linux VM. Unix domain sockets
+# in /private/tmp are owned by the macOS kernel and cannot be relayed into
+# the VM — the socket file appears inside the container but the agent process
+# is unreachable, so every connection attempt gets ECONNREFUSED.
+#
+# Instead of mounting the whole ~/.ssh directory (which brings in a config
+# file that may contain macOS-specific directives the Linux ssh binary
+# rejects), we mount only the specific key file(s) needed for SSH auth.
+# The entrypoint sets GIT_SSH_COMMAND to invoke ssh with an explicit -i flag
+# pointing at the mounted key, bypassing ~/.ssh/config entirely.
+#
+# Fallback chain:
+#   1. Direct agent socket bind-mount — Linux hosts only
+#   2. Specific key file mount        — macOS hosts, or when no agent socket
+#   3. Nothing                        — no SSH auth available; git over SSH fails
+if [[ "$(uname -s)" == "Linux" && -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
+    # Linux host: socket is in the same kernel namespace — bind-mount works.
+    # Read-write required: Unix sockets need write access to connect.
+    VOLUME_FLAGS+=(-v "${SSH_AUTH_SOCK}:/tmp/ssh-agent.sock:rw")
     echo "SSH_AUTH_SOCK=/tmp/ssh-agent.sock" >> "$ENV_FILE"
-elif [[ -d "${HOME}/.ssh" ]]; then
-    VOLUME_FLAGS+=(-v "${HOME}/.ssh:/home/opencode/.ssh:ro")
+else
+    # macOS host (or no agent socket): mount a specific key file read-only.
+    # Explicit --key takes priority; otherwise try id_ed25519 then id_rsa.
+    if [[ -n "$SSH_KEY" ]]; then
+        _keyfile="$(cd "$(dirname "$SSH_KEY")" && pwd)/$(basename "$SSH_KEY")"
+        [[ -f "$_keyfile" ]] || die "SSH key not found: ${SSH_KEY}"
+    else
+        _keyfile=""
+        for _candidate in "${HOME}/.ssh/id_ed25519" "${HOME}/.ssh/id_rsa"; do
+            if [[ -f "$_candidate" ]]; then
+                _keyfile="$_candidate"
+                break
+            fi
+        done
+    fi
+
+    if [[ -n "$_keyfile" ]]; then
+        VOLUME_FLAGS+=(-v "${_keyfile}:/home/opencode/.ssh/id:ro")
+        [[ -f "${_keyfile}.pub" ]] && \
+            VOLUME_FLAGS+=(-v "${_keyfile}.pub:/home/opencode/.ssh/id.pub:ro")
+        echo "SSH_IDENTITY_FILE=/home/opencode/.ssh/id" >> "$ENV_FILE"
+    else
+        info "WARNING: No SSH key found. SSH-based git operations will fail."
+        info "         Use -k/--key to specify a key, or create ~/.ssh/id_ed25519 or ~/.ssh/id_rsa."
+    fi
+    unset _keyfile _candidate
 fi
 
 # Persistent config volume (tui.json, opencode.json user edits)
@@ -301,12 +359,6 @@ if [[ -z "$WORKSPACE_NAME" || "$WORKSPACE_NAME" == "$CONTAINER_PREFIX" ]]; then
     CONTAINER_NAME="${CONTAINER_PREFIX}-$$"
 else
     CONTAINER_NAME="${CONTAINER_PREFIX}-${WORKSPACE_NAME}-$$"
-fi
-
-# Only attach a TTY when stdin is a terminal (allows non-interactive / CI usage)
-DOCKER_FLAGS=(--rm --interactive)
-if [[ -t 0 ]]; then
-    DOCKER_FLAGS+=(--tty)
 fi
 
 info "Workspace: ${WORKSPACE}"

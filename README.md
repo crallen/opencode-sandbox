@@ -36,6 +36,7 @@ If `workspace-path` is omitted, the current directory is used.
 | Flag | Description |
 |---|---|
 | `-r, --ref DIR` | Mount a read-only reference directory (repeatable) |
+| `-k, --key FILE` | SSH private key to use for git/cargo authentication (macOS only; see [Host Mounts](#host-mounts)) |
 | `--pull` | Check GHCR for a newer image and pull if the digest has changed |
 | `--build` | Build the Docker image locally from source |
 | `--build --pull` | Build locally, refreshing the base image first |
@@ -63,6 +64,9 @@ opencode-sandbox ~/projects/myapp
 
 # Mount sibling projects as read-only references
 opencode-sandbox -r ../shared-lib -r ../api-contracts ~/projects/myapp
+
+# Use a specific SSH key (macOS; defaults to id_ed25519 or id_rsa)
+opencode-sandbox -k ~/.ssh/my_github_key ~/projects/myapp
 
 # Update to the latest GHCR image
 opencode-sandbox --pull .
@@ -97,10 +101,12 @@ The following are mounted automatically when present:
 | Host Path | Container Path | Mode |
 |---|---|---|
 | `~/.gitconfig` | `~/.gitconfig` | read-only |
-| `$SSH_AUTH_SOCK` | `/tmp/ssh-agent.sock` | read-only |
-| `~/.ssh` *(fallback)* | `~/.ssh` | read-only |
+| `$SSH_AUTH_SOCK` | `/tmp/ssh-agent.sock` | read-write *(Linux hosts only)* |
+| `~/.ssh/id_ed25519` or `~/.ssh/id_rsa` *(or `-k` override)* | `~/.ssh/id` | read-only *(macOS hosts)* |
 
-SSH authentication prefers **agent forwarding** via `SSH_AUTH_SOCK` — this avoids exposing private key files inside the container. If the agent socket is not available, the `~/.ssh` directory is mounted read-only as a fallback.
+On **Linux hosts**, the container shares the host kernel so the SSH agent socket can be bind-mounted directly and agent forwarding works normally.
+
+On **macOS hosts**, Docker Desktop runs containers in a Linux VM and the launchd SSH agent socket cannot cross the VM boundary. Instead, the launcher mounts a single key file (`id_ed25519` preferred, falling back to `id_rsa`) and sets `GIT_SSH_COMMAND` to invoke `ssh` with that key explicitly — bypassing `~/.ssh/config` entirely, which avoids errors from macOS-specific directives (`UseKeychain`, `AddKeysToAgent`) that the Linux `ssh` binary does not understand.
 
 The entrypoint warns at startup if git config or SSH access is missing.
 
@@ -206,6 +212,24 @@ The global `opencode.json` sets these defaults:
 - `/reference/*` — read, search, and list allowed; edits denied
 - External directories — denied by default (only `/reference/*` is allowlisted)
 - `.env` files — read denied (prevents accidental secret exposure)
+
+## Known Limitations
+
+### Rust / Cargo
+
+`cargo check`, `cargo build`, and `cargo test` require a writable `~/.rustup/tmp` at runtime (rustup creates it to resolve the active toolchain before invoking `cargo`). The entrypoint fixes this automatically by chowning the relevant subdirectories at container start, so these commands work normally.
+
+**Private SSH git dependencies** (e.g. `{ git = "ssh://git@github.com/org/repo.git" }` in `Cargo.toml`) require SSH access to GitHub. The container has outbound network access and will use either the forwarded agent socket (Linux hosts) or the mounted key file (macOS) for authentication — both work as long as the relevant key is available.
+
+### Node.js / Vite / Rollup
+
+Vite and Rollup ship platform-specific native binaries as optional npm packages (e.g. `@rollup/rollup-linux-arm64-gnu`). If `node_modules` was installed on a different OS/architecture (e.g. macOS), the linux/arm64 binary will be missing and `vite build` or the Vite dev server will fail with `Cannot find module @rollup/rollup-linux-arm64-gnu`.
+
+**Fix**: run `npm install` inside the container once (the container has network access) to let npm fetch the correct native binary for the container's architecture. `eslint` and `tsc --noEmit` are unaffected and work correctly without it.
+
+### Go
+
+`go build` and `go test` work for projects with public module dependencies (fetched via GOPROXY over HTTPS). For private modules requiring SSH, the same key file / agent forwarding setup applies as for Cargo above.
 
 ## CI & Published Image
 

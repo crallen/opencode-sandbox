@@ -49,7 +49,7 @@ sync_config() {
     done
 }
 
-# Warn about missing git/SSH configuration.
+# Warn about missing git/SSH configuration and known sandbox limitations.
 preflight_checks() {
     local home="$1"
     if [ ! -s "$home/.gitconfig" ]; then
@@ -57,9 +57,20 @@ preflight_checks() {
         echo "         Ensure your host has a ~/.gitconfig file."
     fi
 
-    if [ -z "${SSH_AUTH_SOCK:-}" ] && { [ ! -d "$home/.ssh" ] || [ -z "$(ls -A "$home/.ssh" 2>/dev/null)" ]; }; then
-        echo "WARNING: No SSH agent or ~/.ssh directory found. SSH-based git operations will fail."
-        echo "         Start an ssh-agent on the host, or ensure ~/.ssh exists with keys."
+    if [ -z "${SSH_AUTH_SOCK:-}" ] && [ -z "${SSH_IDENTITY_FILE:-}" ]; then
+        echo "WARNING: No SSH auth available. SSH-based git operations will fail."
+        echo "         On macOS, ensure ~/.ssh/id_ed25519 or ~/.ssh/id_rsa exists."
+        echo "         On Linux, ensure SSH_AUTH_SOCK is set to a live agent socket."
+    fi
+
+    # Warn if the workspace has a Cargo.toml with SSH git dependencies but no
+    # usable SSH auth is available.
+    if [ -f /workspace/Cargo.toml ] && \
+       grep -q 'git = "ssh://' /workspace/Cargo.toml 2>/dev/null; then
+        if [ -z "${SSH_AUTH_SOCK:-}" ] && [ -z "${SSH_IDENTITY_FILE:-}" ]; then
+            echo "WARNING: Cargo.toml has SSH git dependencies but no SSH auth is available."
+            echo "         Cargo fetch will fail with a public-key authentication error."
+        fi
     fi
 }
 
@@ -177,6 +188,50 @@ if [ "$(id -u)" = "0" ]; then
         chown "${HOST_UID}:${HOST_GID}" "$CHOWN_SENTINEL"
     fi
 
+    # --- Fix writable subdirectories inside skipped toolchain trees ---
+    # The large toolchain trees (.rustup, .cargo, .nvm, go/) are deliberately
+    # skipped by the chown block above for performance — chowning thousands of
+    # files on every first run is prohibitively slow. However, each toolchain
+    # needs to write into specific subdirectories at runtime (e.g. rustup needs
+    # .rustup/tmp to resolve the active toolchain; cargo needs .cargo/git/ and
+    # .cargo/registry/ to cache fetched dependencies; go needs ~/go/pkg/mod/).
+    #
+    # The fix: ensure those specific write-target directories exist and are
+    # owned by the runtime user. We create them if missing and chown them
+    # directly — no recursion needed, just the directory itself. Any files
+    # already inside (from the image build) stay with their original ownership
+    # but the directories are writable so the tools can create new entries.
+    #
+    # This runs unconditionally on every start (not gated on NEEDS_REMAP or
+    # the sentinel) because these dirs may need fixing regardless of whether
+    # a UID remap occurred, and the operation is cheap (a handful of chowns).
+
+    # Top-level toolchain home dirs — chown only the directory itself so the
+    # runtime user can create subdirectories (e.g. .rustup/tmp, .cargo/git/).
+    for dir in \
+        /home/opencode/.rustup \
+        /home/opencode/.cargo \
+    ; do
+        chown "${HOST_UID}:${HOST_GID}" "$dir" 2>/dev/null || true
+    done
+
+    # Specific write-target subdirectories that toolchains create/use at runtime.
+    # These are created if missing and chowned — no recursion into the large
+    # baked-in toolchain trees.
+    for dir in \
+        /home/opencode/.rustup/tmp \
+        /home/opencode/.rustup/toolchains \
+        /home/opencode/.rustup/update-hashes \
+        /home/opencode/.cargo/bin \
+        /home/opencode/.cargo/git \
+        /home/opencode/.cargo/registry \
+        /home/opencode/go/pkg \
+        /home/opencode/go/pkg/mod \
+    ; do
+        mkdir -p "$dir" 2>/dev/null || true
+        chown "${HOST_UID}:${HOST_GID}" "$dir" 2>/dev/null || true
+    done
+
     # --- Sync config & pre-flight checks ---
     sync_config "/home/opencode/.config/opencode" \
                 "/home/opencode/.config/opencode.defaults" \
@@ -189,6 +244,16 @@ if [ "$(id -u)" = "0" ]; then
     # /workspace as a safe directory for the opencode user. This must be done
     # as root writing to the opencode user's gitconfig before dropping privs.
     gosu "$TARGET_USER" git config --global --add safe.directory /workspace 2>/dev/null || true
+
+    # --- Configure SSH identity for git/cargo ---
+    # When a specific key file is mounted (SSH_IDENTITY_FILE is set by the
+    # launcher), point GIT_SSH_COMMAND at it explicitly. This bypasses
+    # ~/.ssh/config entirely — no risk of macOS-specific directives
+    # (UseKeychain, AddKeysToAgent) breaking the Linux ssh binary.
+    if [ -n "${SSH_IDENTITY_FILE:-}" ]; then
+        export GIT_SSH_COMMAND="ssh -i ${SSH_IDENTITY_FILE} -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null"
+        export CARGO_NET_GIT_FETCH_WITH_CLI=true
+    fi
 
     # --- Drop privileges and launch OpenCode ---
     info "Starting OpenCode..."
@@ -213,6 +278,12 @@ preflight_checks "$HOME"
 # /workspace is a bind-mount that may be owned by a different UID than the
 # container user. Register it as a git safe directory so git commands work.
 git config --global --add safe.directory /workspace 2>/dev/null || true
+
+# Configure SSH identity for git/cargo (see root path above).
+if [ -n "${SSH_IDENTITY_FILE:-}" ]; then
+    export GIT_SSH_COMMAND="ssh -i ${SSH_IDENTITY_FILE} -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null"
+    export CARGO_NET_GIT_FETCH_WITH_CLI=true
+fi
 
 export NVM_DIR="$HOME/.nvm"
 # Source nvm.sh to enable `nvm` shell functions (e.g. `nvm install`, `nvm use`).
