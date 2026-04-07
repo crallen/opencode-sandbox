@@ -21,6 +21,10 @@
 #   --clean                Remove workspace-scoped volumes for the current workspace
 #                          (i.e. those created by -V node and -V rust), then exit.
 #                          Shared volumes (Cargo registry, GOPATH) are not removed.
+#   --host-network         Use the host's network stack (--network host). Allows the
+#                          container to reach services bound to localhost on the host
+#                          (e.g. a local database). Linux only — has no effect on
+#                          macOS or Windows where Docker runs inside a VM.
 #   --build                Build the Docker image locally from source
 #   --pull                 Pull latest image from GHCR; or refresh base image when
 #                          combined with --build
@@ -68,6 +72,7 @@ usage() {
     echo "  opencode-sandbox -V node ~/projects/myapp           # fast node_modules volume"
     echo "  opencode-sandbox -V rust -V node ~/projects/myapp   # multiple presets"
     echo "  opencode-sandbox --clean ~/projects/myapp           # remove workspace volumes"
+    echo "  opencode-sandbox --host-network ~/projects/myapp   # reach host-side databases (Linux)"
     echo "  opencode-sandbox --pull .                           # update to latest GHCR image"
     echo "  opencode-sandbox --build .                          # build locally from source"
     echo "  opencode-sandbox . -- --version                     # pass flags to opencode"
@@ -90,6 +95,7 @@ info() {
 FORCE_BUILD=false
 FORCE_PULL=false
 CLEAN_VOLUMES=false
+HOST_NETWORK=false
 WORKSPACE=""
 REF_DIRS=()
 VOLUME_PRESETS=()
@@ -124,6 +130,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --clean)
             CLEAN_VOLUMES=true
+            shift
+            ;;
+        --host-network)
+            HOST_NETWORK=true
             shift
             ;;
         --build)
@@ -325,6 +335,9 @@ DOCKER_FLAGS=(--rm --interactive)
 if [[ -t 0 ]]; then
     DOCKER_FLAGS+=(--tty)
 fi
+if [[ "$HOST_NETWORK" == true ]]; then
+    DOCKER_FLAGS+=(--network host)
+fi
 
 VOLUME_FLAGS=()
 
@@ -459,6 +472,9 @@ for ref in "${REF_DIRS[@]+"${REF_DIRS[@]}"}"; do
 done
 if [[ ${#VOLUME_PRESETS[@]} -gt 0 ]]; then
     info "Presets:   ${VOLUME_PRESETS[*]}"
+fi
+if [[ "$HOST_NETWORK" == true ]]; then
+    info "Network:   host"
 fi
 info "Container: ${CONTAINER_NAME}"
 

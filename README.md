@@ -39,6 +39,7 @@ If `workspace-path` is omitted, the current directory is used.
 | `-k, --key FILE` | SSH private key to mount for git/cargo authentication; on Linux, agent forwarding is used by default (see [Host Mounts](#host-mounts)) |
 | `-V, --volume-preset P` | Mount named Docker volumes for build artifact directories, bypassing the slow gRPC FUSE workspace mount (repeatable; see [Volume Presets](#volume-presets)) |
 | `--clean` | Remove workspace-scoped volumes for the current workspace, then exit |
+| `--host-network` | Use the host's network stack; allows the container to reach services on `localhost` (Linux only — on macOS/Windows use `host.docker.internal` instead) |
 | `--pull` | Check GHCR for a newer image and pull if the digest has changed |
 | `--build` | Build the Docker image locally from source |
 | `--build --pull` | Build locally, refreshing the base image first |
@@ -78,6 +79,9 @@ opencode-sandbox -V node -V rust ~/projects/myapp
 
 # Remove workspace-scoped volumes (e.g. to force a clean build)
 opencode-sandbox --clean ~/projects/myapp
+
+# Reach a database running on the host (Linux only)
+opencode-sandbox --host-network ~/projects/myapp
 
 # Update to the latest GHCR image
 opencode-sandbox --pull .
@@ -172,6 +176,21 @@ On **Linux hosts**, the container shares the host kernel so the SSH agent socket
 On **macOS hosts**, Docker Desktop runs containers in a Linux VM and the launchd SSH agent socket cannot cross the VM boundary. Instead, the launcher mounts a single key file (`id_ed25519` preferred, falling back to `id_rsa`) and sets `GIT_SSH_COMMAND` to invoke `ssh` with that key explicitly — bypassing `~/.ssh/config` entirely, which avoids errors from macOS-specific directives (`UseKeychain`, `AddKeysToAgent`) that the Linux `ssh` binary does not understand.
 
 The entrypoint warns at startup if git config or SSH access is missing.
+
+### Networking
+
+By default the container uses Docker's bridge network and has outbound internet access.
+
+**Reaching host services (e.g. a local database):**
+
+| Host OS | How to connect |
+|---|---|
+| **Linux** | Pass `--host-network`; use `localhost` as normal |
+| **macOS / Windows** | Use `host.docker.internal` as the hostname; Docker Desktop resolves this to the host from within any container |
+
+On macOS and Windows, Docker Desktop runs containers inside a Linux VM. `--network host` attaches the container to that VM's network, not the host's — so `localhost` inside the container refers to the VM, not your machine. `host.docker.internal` is the correct way to reach the host.
+
+If the service you want to reach is another Docker container with port forwarding configured (e.g. `-p 5432:5432`), it is reachable via `host.docker.internal:5432` on macOS/Windows, or via `localhost:5432` with `--host-network` on Linux.
 
 ## What's Inside
 
