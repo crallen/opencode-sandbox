@@ -284,6 +284,8 @@ opencode-sandbox/
 
 **Config and AGENTS.md** are baked into the Docker image and seeded into the persistent `opencode-config` volume on first run. User settings (`tui.json`, `opencode.json` edits) persist in `opencode-config`, while runtime preferences (theme selection, model choice, prompt history) persist in `opencode-state`. Agents, skills, and commands are bind-mounted read-only from this repo so edits are picked up on container restart without rebuilding.
 
+**What requires a rebuild** (`--build`): changes to the `Dockerfile`, `entrypoint.sh`, toolchain install scripts, or the global `opencode.json`/`AGENTS.md` config. **What does not**: changes to agents, skills, and commands in `.opencode/` — these are bind-mounted and take effect immediately on the next container start.
+
 **Projects mounted at `/workspace`** can provide their own `.opencode/` directory and `opencode.json` to layer project-specific agents, skills, and configuration on top of the global defaults. OpenCode's config precedence handles the merge automatically.
 
 ### Permissions
