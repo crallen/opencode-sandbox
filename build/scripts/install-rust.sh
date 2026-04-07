@@ -10,12 +10,7 @@ set -euo pipefail
 # RUSTUP_HOME and CARGO_HOME are set by the Dockerfile ENV before this script
 # runs, so rustup installs into the correct locations automatically.
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- \
-    -y --no-modify-path --default-toolchain stable --profile minimal
-
-# Install essential development components.
-# clippy: the Rust linter (cargo clippy)
-# rustfmt: the code formatter (cargo fmt / rustfmt)
-rustup component add clippy rustfmt
+    -y --no-modify-path --default-toolchain stable --profile default
 
 # Remove download/temp cache — not needed at runtime.
 rm -rf "$RUSTUP_HOME/downloads" "$RUSTUP_HOME/tmp"
