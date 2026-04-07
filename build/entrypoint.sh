@@ -232,6 +232,19 @@ if [ "$(id -u)" = "0" ]; then
         chown "${HOST_UID}:${HOST_GID}" "$dir" 2>/dev/null || true
     done
 
+    # --- Fix ownership of named volume mount points under /workspace ---
+    # When a -V/--volume-preset volume is used (node, rust, go), Docker
+    # initialises the new named volume as an empty root:root 755 directory.
+    # The entrypoint runs as root before dropping privileges, so we chown any
+    # of the known preset mount points that exist. This is unconditional and
+    # cheap — just a handful of chowns on directory entries, no recursion.
+    for dir in \
+        /workspace/node_modules \
+        /workspace/target \
+    ; do
+        [ -d "$dir" ] && chown "${HOST_UID}:${HOST_GID}" "$dir" 2>/dev/null || true
+    done
+
     # --- Sync config & pre-flight checks ---
     sync_config "/home/opencode/.config/opencode" \
                 "/home/opencode/.config/opencode.defaults" \

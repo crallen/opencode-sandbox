@@ -17,7 +17,7 @@
 #                            node  — /workspace/node_modules (workspace-scoped)
 #                            rust  — /workspace/target (workspace-scoped)
 #                                    + shared Cargo registry and git cache
-#                            go    — shared GOPATH (/root/go)
+#                            go    — shared GOPATH (/home/opencode/go)
 #   --clean                Remove workspace-scoped volumes for the current workspace
 #                          (i.e. those created by -V node and -V rust), then exit.
 #                          Shared volumes (Cargo registry, GOPATH) are not removed.
@@ -449,7 +449,7 @@ for preset in "${VOLUME_PRESETS[@]+"${VOLUME_PRESETS[@]}"}"; do
             VOLUME_FLAGS+=(-v "opencode-cargo-git:/root/.cargo/git")
             ;;
         go)
-            VOLUME_FLAGS+=(-v "opencode-gopath:/root/go")
+            VOLUME_FLAGS+=(-v "opencode-gopath:/home/opencode/go")
             ;;
     esac
 done

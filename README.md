@@ -126,7 +126,7 @@ The `-V`/`--volume-preset` flag mounts named Docker volumes over specific high-c
 |---|---|---|
 | `node` | `/workspace/node_modules` | Per-workspace |
 | `rust` | `/workspace/target`, `~/.cargo/registry`, `~/.cargo/git` | `target` per-workspace; Cargo cache shared |
-| `go` | `/root/go` (full GOPATH) | Shared across all workspaces |
+| `go` | `~/go` (full GOPATH) | Shared across all workspaces |
 
 **Per-workspace** volumes are isolated per project (named with the workspace directory slug). **Shared** volumes are reused across all workspaces so downloaded packages are cached globally.
 
