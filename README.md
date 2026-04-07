@@ -89,16 +89,34 @@ opencode-sandbox --build .
 opencode-sandbox . -- --version
 ```
 
-### Volume Presets
+### I/O Performance on macOS
 
-On macOS, Docker Desktop mounts the workspace via **gRPC FUSE**, a userspace filesystem that adds latency to every file operation. This is particularly noticeable for:
+On macOS, Docker Desktop mounts the workspace via **gRPC FUSE**, a userspace filesystem that proxies every file operation over a gRPC socket to the host. The round-trip overhead is noticeable for anything that touches many files:
 
 - `node_modules` — thousands of small files read during startup and builds
 - `target/` — large Rust build artifacts with frequent stat/mtime checks
 - `~/.cargo/registry` and `~/.cargo/git` — Cargo dependency cache
 - `~/go/` — Go module cache and compiled packages
 
-The `-V`/`--volume-preset` flag mounts named Docker volumes over these directories instead. Named volumes live on the Linux VM's native ext4 filesystem and bypass gRPC FUSE entirely, giving significantly faster build and install times.
+There are two complementary ways to improve this.
+
+#### Option 1: Enable VirtioFS in Docker Desktop
+
+VirtioFS replaces gRPC FUSE with a shared-memory transport, significantly reducing filesystem latency across the entire workspace mount — no code or flag changes needed.
+
+To enable it: **Docker Desktop → Settings → General → Virtual file sharing implementation → VirtioFS**, then apply and restart.
+
+VirtioFS is not enabled by default; you must opt in regardless of hardware. It requires Docker Desktop 4.6 or later.
+
+**Tradeoffs:**
+- ✅ Zero application changes — improves the whole workspace transparently
+- ✅ Better file watcher reliability (Vite HMR, webpack watch mode)
+- ⚠️ Still slower than a native Docker volume for the highest-churn directories
+- ⚠️ macOS only (Linux hosts use the host kernel directly and are unaffected)
+
+#### Option 2: Named volumes with `-V`/`--volume-preset`
+
+The `-V`/`--volume-preset` flag mounts named Docker volumes over specific high-churn directories. Named volumes live on the Linux VM's native ext4 filesystem and bypass gRPC FUSE (or VirtioFS) entirely, giving the best possible I/O for build artifacts.
 
 | Preset | Volumes mounted | Scope |
 |---|---|---|
@@ -111,6 +129,17 @@ The `-V`/`--volume-preset` flag mounts named Docker volumes over these directori
 > **Note:** On first use, the volume will be empty. Run `npm install`, `cargo build`, etc. inside the container once to populate it. Subsequent runs will reuse the cached contents.
 
 Use `--clean` to remove the workspace-scoped volumes for the current workspace (useful when you need a completely fresh `node_modules` or `target`). Shared volumes (Cargo registry, GOPATH) are never removed by `--clean`.
+
+**Tradeoffs:**
+- ✅ Fastest possible I/O for the covered directories — native ext4, no translation layer
+- ✅ Works regardless of which file sharing backend Docker Desktop is using
+- ⚠️ Volume contents are not visible on the host filesystem
+- ⚠️ Volumes must be populated on first use
+- ⚠️ Per-workspace volumes consume disk space in the Docker VM; use `--clean` to reclaim it
+
+#### Recommendation
+
+Enable **VirtioFS** as a baseline — it improves the whole workspace for free. Then add **`-V` presets** for the specific directories where you're doing heavy build work. The two options stack.
 
 ### API Keys
 
