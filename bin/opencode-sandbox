@@ -7,14 +7,24 @@
 #   opencode-sandbox [options] [workspace-path] [-- opencode-args...]
 #
 # Options:
-#   -r, --ref DIR    Mount DIR as a read-only reference directory (repeatable)
-#   -k, --key FILE   SSH private key to mount for git/cargo authentication.
-#                    Defaults to ~/.ssh/id_ed25519 or ~/.ssh/id_rsa (whichever
-#                    exists). Ignored on Linux where agent forwarding is used.
-#   --build          Build the Docker image locally from source
-#   --pull           Pull latest image from GHCR; or refresh base image when
-#                    combined with --build
-#   -h, --help       Show this help message
+#   -r, --ref DIR          Mount DIR as a read-only reference directory (repeatable)
+#   -k, --key FILE         SSH private key to mount for git/cargo authentication.
+#                          Defaults to ~/.ssh/id_ed25519 or ~/.ssh/id_rsa (whichever
+#                          exists). Ignored on Linux where agent forwarding is used.
+#   -V, --volume-preset P  Mount named Docker volumes for build artifact directories,
+#                          bypassing the slow gRPC FUSE workspace mount. (repeatable)
+#                          Available presets:
+#                            node  — /workspace/node_modules (workspace-scoped)
+#                            rust  — /workspace/target (workspace-scoped)
+#                                    + shared Cargo registry and git cache
+#                            go    — shared GOPATH (/root/go)
+#   --clean                Remove workspace-scoped volumes for the current workspace
+#                          (i.e. those created by -V node and -V rust), then exit.
+#                          Shared volumes (Cargo registry, GOPATH) are not removed.
+#   --build                Build the Docker image locally from source
+#   --pull                 Pull latest image from GHCR; or refresh base image when
+#                          combined with --build
+#   -h, --help             Show this help message
 #
 # If workspace-path is omitted, the current directory is used.
 # Everything after "--" is forwarded to the opencode binary inside the container.
@@ -55,6 +65,9 @@ usage() {
     echo "  opencode-sandbox -r ~/projects/lib-a .              # with a reference dir"
     echo "  opencode-sandbox -r ../lib-a -r ../lib-b ~/myapp    # multiple references"
     echo "  opencode-sandbox -k ~/.ssh/my_key ~/projects/myapp  # explicit SSH key"
+    echo "  opencode-sandbox -V node ~/projects/myapp           # fast node_modules volume"
+    echo "  opencode-sandbox -V rust -V node ~/projects/myapp   # multiple presets"
+    echo "  opencode-sandbox --clean ~/projects/myapp           # remove workspace volumes"
     echo "  opencode-sandbox --pull .                           # update to latest GHCR image"
     echo "  opencode-sandbox --build .                          # build locally from source"
     echo "  opencode-sandbox . -- --version                     # pass flags to opencode"
@@ -76,10 +89,15 @@ info() {
 
 FORCE_BUILD=false
 FORCE_PULL=false
+CLEAN_VOLUMES=false
 WORKSPACE=""
 REF_DIRS=()
+VOLUME_PRESETS=()
 OPENCODE_ARGS=()
 SSH_KEY=""
+
+# Valid preset names
+_VALID_PRESETS=(node rust go)
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -92,6 +110,21 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || die "--key requires a file argument"
             SSH_KEY="$2"
             shift 2
+            ;;
+        -V|--volume-preset)
+            [[ $# -ge 2 ]] || die "--volume-preset requires a preset name argument"
+            preset="$2"
+            valid=false
+            for p in "${_VALID_PRESETS[@]}"; do
+                [[ "$preset" == "$p" ]] && valid=true && break
+            done
+            "$valid" || die "unknown volume preset: '${preset}' (valid: ${_VALID_PRESETS[*]})"
+            VOLUME_PRESETS+=("$preset")
+            shift 2
+            ;;
+        --clean)
+            CLEAN_VOLUMES=true
+            shift
             ;;
         --build)
             FORCE_BUILD=true
@@ -128,6 +161,42 @@ WORKSPACE="${WORKSPACE:-.}"
 
 # Resolve to absolute path
 WORKSPACE="$(cd "$WORKSPACE" 2>/dev/null && pwd)" || die "workspace path does not exist: $WORKSPACE"
+
+# Derive workspace name early so --clean can use it without going further.
+# (The full volume-flag assembly block below also uses this value.)
+# Sanitize to Docker's allowed charset: [a-zA-Z0-9_.-], must start alphanum.
+WORKSPACE_NAME="$(basename "$WORKSPACE" | tr -c 'a-zA-Z0-9_.-' '-' | sed 's/^[^a-zA-Z0-9]/x/; s/-*$//')"
+
+# ---------------------------------------------------------------------------
+# --clean: remove workspace-scoped volumes, then exit.
+# Must run before image resolution so we don't hit the registry unnecessarily.
+# Shared volumes (cargo registry/git, gopath) are intentionally left intact.
+# ---------------------------------------------------------------------------
+
+if [[ "$CLEAN_VOLUMES" == true ]]; then
+    _scoped_volumes=(
+        "opencode-node-modules-${WORKSPACE_NAME}"
+        "opencode-rust-target-${WORKSPACE_NAME}"
+        "opencode-data-${WORKSPACE_NAME}"
+    )
+    _removed=()
+    _missing=()
+    for vol in "${_scoped_volumes[@]}"; do
+        if docker volume inspect "$vol" &>/dev/null; then
+            docker volume rm "$vol" >/dev/null
+            _removed+=("$vol")
+        else
+            _missing+=("$vol")
+        fi
+    done
+    if [[ ${#_removed[@]} -gt 0 ]]; then
+        info "Removed volumes: ${_removed[*]}"
+    fi
+    if [[ ${#_missing[@]} -gt 0 ]]; then
+        info "Already absent:  ${_missing[*]}"
+    fi
+    exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Validate reference directories (detect basename collisions early)
@@ -335,13 +404,8 @@ for ref in "${REF_DIRS[@]+"${REF_DIRS[@]}"}"; do
 done
 
 # ---------------------------------------------------------------------------
-# Derive workspace name (used for both volume naming and container naming)
+# Assemble remaining volume flags now that WORKSPACE_NAME is set
 # ---------------------------------------------------------------------------
-
-# Sanitize to Docker's allowed charset: [a-zA-Z0-9_.-], must start alphanum.
-# Strip trailing dashes produced by tr replacing the trailing newline, and
-# avoid doubling the prefix when the workspace folder is named identically.
-WORKSPACE_NAME="$(basename "$WORKSPACE" | tr -c 'a-zA-Z0-9_.-' '-' | sed 's/^[^a-zA-Z0-9]/x/; s/-*$//')"
 
 # Persistent state volume (theme, model selection, prompt history)
 VOLUME_FLAGS+=(-v "opencode-state:/home/opencode/.local/state/opencode")
@@ -349,6 +413,33 @@ VOLUME_FLAGS+=(-v "opencode-state:/home/opencode/.local/state/opencode")
 # Persistent data volume (sessions, snapshots, logs — scoped per workspace to
 # avoid SQLite WAL contention and session bleed between unrelated projects)
 VOLUME_FLAGS+=(-v "opencode-data-${WORKSPACE_NAME}:/home/opencode/.local/share/opencode")
+
+# ---------------------------------------------------------------------------
+# Volume presets — named Docker volumes that bypass the grpcfuse workspace
+# mount for high-churn build artifact directories.
+#
+# Workspace-scoped volumes (node_modules, target) are named with the
+# workspace slug so each project gets its own isolated volume.
+#
+# Shared volumes (Cargo registry/git, GOPATH) are reused across all
+# workspaces so downloaded dependencies are cached globally.
+# ---------------------------------------------------------------------------
+
+for preset in "${VOLUME_PRESETS[@]+"${VOLUME_PRESETS[@]}"}"; do
+    case "$preset" in
+        node)
+            VOLUME_FLAGS+=(-v "opencode-node-modules-${WORKSPACE_NAME}:/workspace/node_modules")
+            ;;
+        rust)
+            VOLUME_FLAGS+=(-v "opencode-rust-target-${WORKSPACE_NAME}:/workspace/target")
+            VOLUME_FLAGS+=(-v "opencode-cargo-registry:/root/.cargo/registry")
+            VOLUME_FLAGS+=(-v "opencode-cargo-git:/root/.cargo/git")
+            ;;
+        go)
+            VOLUME_FLAGS+=(-v "opencode-gopath:/root/go")
+            ;;
+    esac
+done
 
 # ---------------------------------------------------------------------------
 # Run
@@ -366,6 +457,9 @@ for ref in "${REF_DIRS[@]+"${REF_DIRS[@]}"}"; do
     ref_abs="$(cd "$ref" 2>/dev/null && pwd)"
     info "Reference: ${ref_abs} -> /reference/$(basename "$ref_abs")"
 done
+if [[ ${#VOLUME_PRESETS[@]} -gt 0 ]]; then
+    info "Presets:   ${VOLUME_PRESETS[*]}"
+fi
 info "Container: ${CONTAINER_NAME}"
 
 # no-new-privileges prevents privilege escalation via setuid binaries during

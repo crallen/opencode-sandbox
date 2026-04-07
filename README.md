@@ -36,7 +36,9 @@ If `workspace-path` is omitted, the current directory is used.
 | Flag | Description |
 |---|---|
 | `-r, --ref DIR` | Mount a read-only reference directory (repeatable) |
-| `-k, --key FILE` | SSH private key to use for git/cargo authentication (macOS only; see [Host Mounts](#host-mounts)) |
+| `-k, --key FILE` | SSH private key to mount for git/cargo authentication; on Linux, agent forwarding is used by default (see [Host Mounts](#host-mounts)) |
+| `-V, --volume-preset P` | Mount named Docker volumes for build artifact directories, bypassing the slow gRPC FUSE workspace mount (repeatable; see [Volume Presets](#volume-presets)) |
+| `--clean` | Remove workspace-scoped volumes for the current workspace, then exit |
 | `--pull` | Check GHCR for a newer image and pull if the digest has changed |
 | `--build` | Build the Docker image locally from source |
 | `--build --pull` | Build locally, refreshing the base image first |
@@ -65,8 +67,17 @@ opencode-sandbox ~/projects/myapp
 # Mount sibling projects as read-only references
 opencode-sandbox -r ../shared-lib -r ../api-contracts ~/projects/myapp
 
-# Use a specific SSH key (macOS; defaults to id_ed25519 or id_rsa)
+# Use a specific SSH key (macOS default; also works on Linux via -k)
 opencode-sandbox -k ~/.ssh/my_github_key ~/projects/myapp
+
+# Fast node_modules volume (bypasses grpcfuse)
+opencode-sandbox -V node ~/projects/myapp
+
+# Multiple presets: fast node_modules and Rust target + Cargo cache
+opencode-sandbox -V node -V rust ~/projects/myapp
+
+# Remove workspace-scoped volumes (e.g. to force a clean build)
+opencode-sandbox --clean ~/projects/myapp
 
 # Update to the latest GHCR image
 opencode-sandbox --pull .
@@ -77,6 +88,29 @@ opencode-sandbox --build .
 # Pass flags to opencode itself
 opencode-sandbox . -- --version
 ```
+
+### Volume Presets
+
+On macOS, Docker Desktop mounts the workspace via **gRPC FUSE**, a userspace filesystem that adds latency to every file operation. This is particularly noticeable for:
+
+- `node_modules` — thousands of small files read during startup and builds
+- `target/` — large Rust build artifacts with frequent stat/mtime checks
+- `~/.cargo/registry` and `~/.cargo/git` — Cargo dependency cache
+- `~/go/` — Go module cache and compiled packages
+
+The `-V`/`--volume-preset` flag mounts named Docker volumes over these directories instead. Named volumes live on the Linux VM's native ext4 filesystem and bypass gRPC FUSE entirely, giving significantly faster build and install times.
+
+| Preset | Volumes mounted | Scope |
+|---|---|---|
+| `node` | `/workspace/node_modules` | Per-workspace |
+| `rust` | `/workspace/target`, `~/.cargo/registry`, `~/.cargo/git` | `target` per-workspace; Cargo cache shared |
+| `go` | `/root/go` (full GOPATH) | Shared across all workspaces |
+
+**Per-workspace** volumes are isolated per project (named with the workspace directory slug). **Shared** volumes are reused across all workspaces so downloaded packages are cached globally.
+
+> **Note:** On first use, the volume will be empty. Run `npm install`, `cargo build`, etc. inside the container once to populate it. Subsequent runs will reuse the cached contents.
+
+Use `--clean` to remove the workspace-scoped volumes for the current workspace (useful when you need a completely fresh `node_modules` or `target`). Shared volumes (Cargo registry, GOPATH) are never removed by `--clean`.
 
 ### API Keys
 
@@ -102,7 +136,7 @@ The following are mounted automatically when present:
 |---|---|---|
 | `~/.gitconfig` | `~/.gitconfig` | read-only |
 | `$SSH_AUTH_SOCK` | `/tmp/ssh-agent.sock` | read-write *(Linux hosts only)* |
-| `~/.ssh/id_ed25519` or `~/.ssh/id_rsa` *(or `-k` override)* | `~/.ssh/id` | read-only *(macOS hosts)* |
+| `~/.ssh/id_ed25519` or `~/.ssh/id_rsa` *(macOS hosts; or override with `-k`)* | `~/.ssh/id` | read-only |
 
 On **Linux hosts**, the container shares the host kernel so the SSH agent socket can be bind-mounted directly and agent forwarding works normally.
 
