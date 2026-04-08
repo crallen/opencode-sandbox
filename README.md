@@ -225,6 +225,7 @@ A primary orchestrator and 9 specialist subagents, all language-agnostic:
 | **git-manager** | Commits, branches, releases, changelogs | Write access, git-only bash |
 | **frontend** | UI components, styling, accessibility | Full access |
 | **agent-builder** | Creates, modifies, and reviews agents, skills, and commands | Write access, read-only bash |
+| **strategist** | Research a goal and produce a structured execution plan before any work begins | Read-only |
 
 ### Skills
 
@@ -256,6 +257,7 @@ Lazy-loaded procedural knowledge. Agents load these on demand via the `skill` to
 | `/release` | Prepare release notes and version bump |
 | `/agent` | Create or modify an agent, skill, or command |
 | `/agent-review` | Review agents, skills, and commands for correctness and consistency |
+| `/plan` | Research a goal and produce a structured execution plan with task checklist |
 
 ## Architecture
 

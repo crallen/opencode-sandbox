@@ -59,6 +59,7 @@ These are invoked automatically by the architect or manually via `@mention`:
 | `@git-manager` | Commits, branches, releases, changelogs | Write access. Bash limited to git and read commands. |
 | `@frontend` | UI components, styling, accessibility, responsive design | Full access. Builds and tests frontend code. |
 | `@agent-builder` | Creates, modifies, and reviews agents, skills, and slash commands | Write access. Bash limited to read-only commands. |
+| `@strategist` | Research a goal and produce a structured execution plan before any work begins | Read-only. Cannot modify files. |
 
 Plus the built-in subagents:
 
@@ -100,6 +101,7 @@ Quick-access commands for common workflows:
 | `/frontend` | Build, update, or fix frontend UI components and pages | frontend |
 | `/agent` | Create or modify an agent, skill, or command | agent-builder |
 | `/agent-review` | Review agents, skills, and commands for correctness and consistency | agent-builder |
+| `/plan` | Research a goal and produce a structured execution plan with task checklist | strategist |
 
 ## General Guidelines
 
