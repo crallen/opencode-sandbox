@@ -80,9 +80,12 @@ RUN /tmp/install-node.sh && rm /tmp/install-node.sh
 COPY --chown=opencode:opencode build/scripts/install-python.sh /tmp/install-python.sh
 RUN /tmp/install-python.sh && rm /tmp/install-python.sh
 
-# OpenCode — always installs the latest release; kept after all toolchains
-# so upstream releases don't invalidate toolchain layers
-RUN curl -fsSL https://opencode.ai/install | bash
+# OpenCode — pinned version via OPENCODE_VERSION build ARG.
+# To upgrade: update the ARG default below and rebuild.
+# Releases: https://github.com/anomalyco/opencode/releases
+# Kept after all toolchains so version bumps only invalidate this layer.
+ARG OPENCODE_VERSION=1.4.0
+RUN VERSION="${OPENCODE_VERSION}" curl -fsSL https://opencode.ai/install | bash
 
 # ---------------------------------------------------------------------------
 # Terminal configuration
