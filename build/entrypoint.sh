@@ -74,6 +74,72 @@ preflight_checks() {
     fi
 }
 
+# Generate a minimal ~/.npmrc from NPM_TOKEN / NPM_TOKEN_<SCOPE> env vars.
+# Called once per startup; if no npm vars are set the function is a no-op and
+# no file is created.
+#
+# Usage: configure_npm_auth <npmrc_path> [owner (uid:gid, optional)]
+#
+# Supported env vars:
+#   NPM_TOKEN                 → //registry.npmjs.org/:_authToken=<token>
+#   NPM_TOKEN_<SCOPE>         → per-scope auth token
+#   NPM_REGISTRY_<SCOPE>      → matching registry URL (must accompany the token)
+#
+# Example for GitHub Packages:
+#   NPM_TOKEN_MYORG=ghp_...
+#   NPM_REGISTRY_MYORG=https://npm.pkg.github.com
+# generates:
+#   @myorg:registry=https://npm.pkg.github.com
+#   //npm.pkg.github.com/:_authToken=ghp_...
+configure_npm_auth() {
+    local npmrc_path="$1" owner="${2:-}"
+    local wrote_something=false
+
+    # Build the file content in a variable to avoid multiple redirects
+    local content=""
+
+    # Standard token for registry.npmjs.org
+    if [[ -n "${NPM_TOKEN:-}" ]]; then
+        content+="//registry.npmjs.org/:_authToken=${NPM_TOKEN}"$'\n'
+        wrote_something=true
+    fi
+
+    # Per-scope tokens paired with a registry URL
+    # Enumerate NPM_TOKEN_<SCOPE> variables and look for a matching NPM_REGISTRY_<SCOPE>
+    while IFS= read -r var; do
+        local scope_upper="${var#NPM_TOKEN_}"           # e.g. MYORG
+        local scope_lower
+        scope_lower="$(echo "$scope_upper" | tr '[:upper:]' '[:lower:]')"  # e.g. myorg
+        local registry_var="NPM_REGISTRY_${scope_upper}"
+        local token_val="${!var:-}"
+        local registry_url="${!registry_var:-}"
+
+        [[ -z "$token_val" ]] && continue
+        if [[ -z "$registry_url" ]]; then
+            echo "WARNING: NPM_TOKEN_${scope_upper} is set but NPM_REGISTRY_${scope_upper} is missing — skipping scope @${scope_lower}"
+            continue
+        fi
+
+        # Strip trailing slash from registry URL for consistency
+        registry_url="${registry_url%/}"
+
+        # Strip the https: scheme to get the //host/path form npm expects
+        local registry_hostpath="${registry_url#https:}"   # → //npm.pkg.github.com
+        registry_hostpath="${registry_hostpath#http:}"     # handle http too
+
+        content+="@${scope_lower}:registry=${registry_url}"$'\n'
+        content+="${registry_hostpath}/:_authToken=${token_val}"$'\n'
+        wrote_something=true
+    done < <(compgen -v | grep -E '^NPM_TOKEN_[A-Z0-9_]+$')
+
+    # Only write the file if there is something to write
+    if [[ "$wrote_something" == true ]]; then
+        printf '%s' "$content" > "$npmrc_path"
+        chmod 600 "$npmrc_path"
+        [[ -n "$owner" ]] && chown "$owner" "$npmrc_path" 2>/dev/null || true
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Root path — remap UID/GID, fix ownership, drop privileges
 # ---------------------------------------------------------------------------
@@ -268,6 +334,12 @@ if [ "$(id -u)" = "0" ]; then
         export CARGO_NET_GIT_FETCH_WITH_CLI=true
     fi
 
+    # --- Configure npm authentication ---
+    # Generate ~/.npmrc from NPM_TOKEN / NPM_TOKEN_* env vars so that
+    # `npm install` can fetch private packages. File is created at runtime,
+    # never baked into the image. No-op if no NPM_TOKEN vars are set.
+    configure_npm_auth "/home/opencode/.npmrc" "${HOST_UID}:${HOST_GID}"
+
     # --- Drop privileges and launch OpenCode ---
     info "Starting OpenCode..."
     # gosu replaces this process with the target user — root is gone.
@@ -297,6 +369,9 @@ if [ -n "${SSH_IDENTITY_FILE:-}" ]; then
     export GIT_SSH_COMMAND="ssh -i ${SSH_IDENTITY_FILE} -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null"
     export CARGO_NET_GIT_FETCH_WITH_CLI=true
 fi
+
+# Configure npm authentication (see root path above).
+configure_npm_auth "$HOME/.npmrc"
 
 export NVM_DIR="$HOME/.nvm"
 # Source nvm.sh to enable `nvm` shell functions (e.g. `nvm install`, `nvm use`).

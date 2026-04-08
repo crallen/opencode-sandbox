@@ -313,17 +313,28 @@ for var in \
     DEEPSEEK_API_KEY \
     OPENROUTER_API_KEY \
     TOGETHER_API_KEY \
-    AWS_ACCESS_KEY_ID \
-    AWS_SECRET_ACCESS_KEY \
-    AWS_SESSION_TOKEN \
-    AWS_REGION \
-    AZURE_OPENAI_API_KEY \
-    AZURE_OPENAI_ENDPOINT \
 ; do
     if [[ -n "${!var:-}" ]]; then
         echo "${var}=${!var}" >> "$ENV_FILE"
     fi
 done
+
+# npm registry credentials — passed through so the entrypoint can generate
+# a minimal ~/.npmrc at container startup (never baked into the image).
+#
+#   NPM_TOKEN                   — auth token for registry.npmjs.org (or the
+#                                 configured default registry)
+#   NPM_TOKEN_<SCOPE>           — per-scope token (e.g. NPM_TOKEN_MYORG)
+#   NPM_REGISTRY_<SCOPE>        — matching registry URL (e.g. NPM_REGISTRY_MYORG)
+#
+# Example — GitHub Packages for @myorg:
+#   export NPM_TOKEN_MYORG=ghp_...
+#   export NPM_REGISTRY_MYORG=https://npm.pkg.github.com
+while IFS= read -r var; do
+    if [[ -n "${!var:-}" ]]; then
+        echo "${var}=${!var}" >> "$ENV_FILE"
+    fi
+done < <(compgen -v | grep -E '^NPM_(TOKEN|TOKEN_[A-Z0-9_]+|REGISTRY_[A-Z0-9_]+)$')
 
 # ---------------------------------------------------------------------------
 # Assemble docker flags, volume mounts, and ssh forwarding

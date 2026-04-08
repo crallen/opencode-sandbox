@@ -160,8 +160,45 @@ API keys are read from your shell environment. Set them however you normally wou
 - `DEEPSEEK_API_KEY`
 - `OPENROUTER_API_KEY`
 - `TOGETHER_API_KEY`
-- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `AWS_REGION`
-- `AZURE_OPENAI_API_KEY` / `AZURE_OPENAI_ENDPOINT`
+- `NPM_TOKEN` — npm auth token (see [npm / Private Packages](#npm--private-packages) below)
+
+### npm / Private Packages
+
+The sandbox can authenticate against private npm registries. Credentials are passed in via the same temporary `--env-file` mechanism used for API keys — they are never baked into the image. At container startup the entrypoint generates a minimal `~/.npmrc` from the following environment variables:
+
+| Variable | Purpose |
+|---|---|
+| `NPM_TOKEN` | Auth token for `registry.npmjs.org` (or your configured default registry) |
+| `NPM_TOKEN_<SCOPE>` | Per-scope auth token, e.g. `NPM_TOKEN_MYORG=ghp_...` |
+| `NPM_REGISTRY_<SCOPE>` | Registry URL for the matching scope, e.g. `NPM_REGISTRY_MYORG=https://npm.pkg.github.com` |
+
+**Example — npmjs.org private packages:**
+
+```bash
+export NPM_TOKEN=npm_xxxxxxxxxxxxxxxx
+opencode-sandbox
+```
+
+**Example — GitHub Packages scoped registry:**
+
+```bash
+export NPM_TOKEN_MYORG=ghp_xxxxxxxxxxxxxxxx
+export NPM_REGISTRY_MYORG=https://npm.pkg.github.com
+opencode-sandbox
+```
+
+This generates `~/.npmrc` inside the container with:
+
+```
+@myorg:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=ghp_xxxxxxxxxxxxxxxx
+```
+
+A few notes:
+
+- The generated `~/.npmrc` is ephemeral — it is recreated from env vars on every container start and is not persisted to any volume.
+- If your project has its own `.npmrc` in `/workspace`, npm uses it as the project-level config (which takes precedence over `~/.npmrc` for project-level settings). The two files stack — the generated `~/.npmrc` fills in auth for any registry not covered by the project file.
+- Scope names are case-insensitive in the env var suffix — `NPM_TOKEN_MYORG` produces `@myorg` in `.npmrc`.
 
 ### Host Mounts
 
