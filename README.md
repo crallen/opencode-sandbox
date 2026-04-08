@@ -2,6 +2,8 @@
 
 A Dockerized [OpenCode](https://opencode.ai) environment with a custom suite of software engineering agents, skills, and slash commands. Mount any project into an isolated container and get a full AI coding team that adapts to whatever tech stack it finds.
 
+> **Note:** This project is not built by the OpenCode team and is not affiliated with them in any way.
+
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/)
