@@ -207,8 +207,13 @@ The following are mounted automatically when present:
 | Host Path | Container Path | Mode |
 |---|---|---|
 | `~/.gitconfig` | `~/.gitconfig` | read-only |
+| `~/.config/git` *(when present)* | `~/.config/git` | read-only |
 | `$SSH_AUTH_SOCK` | `/tmp/ssh-agent.sock` | read-write *(Linux hosts only)* |
 | `~/.ssh/id_ed25519` or `~/.ssh/id_rsa` *(macOS hosts; or override with `-k`)* | `~/.ssh/id` | read-only |
+
+Mounting both git paths supports include-based Git setups (for example,
+`~/.gitconfig` with `include.path=~/.config/git/config`) so `user.name` and
+`user.email` resolve correctly inside the container.
 
 On **Linux hosts**, the container shares the host kernel so the SSH agent socket can be bind-mounted directly and agent forwarding works normally.
 

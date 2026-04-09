@@ -360,6 +360,13 @@ if [[ -f "${HOME}/.gitconfig" ]]; then
     VOLUME_FLAGS+=(-v "${HOME}/.gitconfig:/home/opencode/.gitconfig:ro")
 fi
 
+# Host XDG git config dir (read-only, optional)
+# Supports setups where ~/.gitconfig uses include/includeIf to reference
+# ~/.config/git/config or related files.
+if [[ -d "${HOME}/.config/git" ]]; then
+    VOLUME_FLAGS+=(-v "${HOME}/.config/git:/home/opencode/.config/git:ro")
+fi
+
 # Host SSH agent forwarding.
 #
 # On macOS, Docker Desktop runs containers in a Linux VM. Unix domain sockets

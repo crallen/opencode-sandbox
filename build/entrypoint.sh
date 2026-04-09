@@ -55,6 +55,19 @@ preflight_checks() {
     if [ ! -s "$home/.gitconfig" ]; then
         echo "WARNING: ~/.gitconfig not mounted or empty. Git operations may lack user identity."
         echo "         Ensure your host has a ~/.gitconfig file."
+    else
+        # Validate that identity resolves from the mounted global git config,
+        # including include/includeIf chains (e.g. ~/.config/git/config).
+        # This catches the common case where only ~/.gitconfig is mounted but
+        # included files are not available in the container.
+        local git_name git_email
+        git_name="$(HOME="$home" git config --file "$home/.gitconfig" --includes --get user.name 2>/dev/null || true)"
+        git_email="$(HOME="$home" git config --file "$home/.gitconfig" --includes --get user.email 2>/dev/null || true)"
+        if [ -z "$git_name" ] || [ -z "$git_email" ]; then
+            echo "WARNING: Git identity is incomplete in mounted global config."
+            echo "         user.name='${git_name:-<missing>}' user.email='${git_email:-<missing>}'"
+            echo "         If ~/.gitconfig uses include/includeIf, ensure included files are mounted (e.g. ~/.config/git)."
+        fi
     fi
 
     if [ -z "${SSH_AUTH_SOCK:-}" ] && [ -z "${SSH_IDENTITY_FILE:-}" ]; then
